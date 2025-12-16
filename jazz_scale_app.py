@@ -89,37 +89,35 @@ def analyze_audio(wav_path, progress_callback):
         return None, str(e), None
 
 # ==========================================
-# 2. GUI用部品 (Virtual Keyboard)
+# 2. GUI用部品 (Virtual Keyboard) - 改良版
 # ==========================================
 class VirtualKeyboard(tk.Canvas):
     def __init__(self, master, width=700, height=120, **kwargs):
         super().__init__(master, width=width, height=height, bg="#f0f0f0", highlightthickness=0, **kwargs)
-        self.key_width = width // 14  # 1オクターブ強を表示
+        self.key_width = width // 14
         self.white_keys = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B
         self.black_keys = [1, 3, 6, 8, 10]       # C#, D#, F#, G#, A#
-        self.key_ids = {} # {note_index: canvas_item_id}
+        self.key_ids = {}
         self.draw_keyboard()
 
     def draw_keyboard(self):
-        # 白鍵を描画
+        # 白鍵
         wk_index = 0
         for i in range(12):
             if i in self.white_keys:
                 x = wk_index * self.key_width
-                # tagに音番号(0=C, 1=C#...)を持たせる
                 rect = self.create_rectangle(x, 0, x + self.key_width, 120, 
                                              fill="white", outline="black", tags=f"key_{i}")
                 self.create_text(x + self.key_width/2, 100, text=NOTE_NAMES[i], fill="#aaa")
                 self.key_ids[i] = rect
                 wk_index += 1
 
-        # 黒鍵を描画（白鍵の上に重ねる）
+        # 黒鍵
         wk_index = 0
         for i in range(12):
             if i in self.white_keys:
                 wk_index += 1
             elif i in self.black_keys:
-                # 黒鍵は白鍵の境界にまたがる
                 x = (wk_index * self.key_width) - (self.key_width * 0.3)
                 rect = self.create_rectangle(x, 0, x + (self.key_width * 0.6), 75, 
                                              fill="black", outline="black", tags=f"key_{i}")
@@ -127,9 +125,10 @@ class VirtualKeyboard(tk.Canvas):
 
     def highlight_keys(self, input_notes_set, scale_notes_set=None):
         """
-        鍵盤の色を更新する
-        input_notes_set: 入力された音声に含まれる音の集合 (例: {0, 4, 7}) -> 緑
-        scale_notes_set: 選択中のスケールに含まれる音の集合 -> 青
+        鍵盤の色分けロジックを改良
+        1. 入力音 AND スケール音 -> 緑 (Perfect Match)
+        2. 入力音 ONLY           -> 赤 (Outside / Avoid)
+        3. スケール音 ONLY       -> 青 (Available Scale Notes)
         """
         scale_notes_set = scale_notes_set or set()
         
@@ -137,17 +136,22 @@ class VirtualKeyboard(tk.Canvas):
             item_id = self.key_ids.get(i)
             if not item_id: continue
 
-            # デフォルト色に戻す
             default_color = "black" if i in self.black_keys else "white"
             
-            if i in input_notes_set:
-                # 入力音に含まれている (最優先) -> 緑
+            # --- ここが変更点 ---
+            is_input = i in input_notes_set
+            is_scale = i in scale_notes_set
+
+            if is_input and is_scale:
+                # 入力音とスケールが一致 (Green)
                 self.itemconfig(item_id, fill="#32CD32") # LimeGreen
-            elif i in scale_notes_set:
-                # スケールに含まれている -> 水色
+            elif is_input and not is_scale:
+                # 入力音だがスケール外 (Red / Alert)
+                self.itemconfig(item_id, fill="#FF6347") # Tomato
+            elif not is_input and is_scale:
+                # 入力されていないスケール音 (Blue)
                 self.itemconfig(item_id, fill="#87CEFA") # LightSkyBlue
             else:
-                # どちらでもない -> 元の色
                 self.itemconfig(item_id, fill=default_color)
 
 # ==========================================
@@ -157,7 +161,7 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.0")
+        self.root.title("Jazz Scale Analyzer v2.1")
         self.root.geometry("800x650")
         
         style = ttk.Style()
@@ -165,14 +169,11 @@ class JazzScaleApp:
         style.configure("Treeview", font=("Meiryo UI", 10), rowheight=25)
         style.configure("Treeview.Heading", font=("Meiryo UI", 10, "bold"))
 
-        # データ保持用
         self.all_scales_dict = generate_all_scales()
-        self.current_input_notes = set() # 現在分析中のWAVの音
+        self.current_input_notes = set()
         self.file_path = None
 
-        # --- レイアウト構築 ---
-        
-        # 1. ヘッダー & コントロール
+        # --- UI ---
         top_frame = ttk.Frame(root, padding=10)
         top_frame.pack(fill=tk.X)
         
@@ -185,19 +186,16 @@ class JazzScaleApp:
         self.btn_play = ttk.Button(btn_frame, text="▶ 再生", command=self.play_audio, state='disabled')
         self.btn_play.pack(side=tk.LEFT)
 
-        # 2. バーチャル鍵盤エリア
-        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (緑:入力音 / 青:スケール音)", padding=10)
+        # ラベルを変更しました
+        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (緑:一致 / 赤:スケール外 / 青:スケール音)", padding=10)
         kbd_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # 鍵盤ウィジェットの配置
         self.keyboard = VirtualKeyboard(kbd_frame, width=760, height=120)
         self.keyboard.pack()
 
-        # 3. 結果リスト (Treeviewに変更)
         result_frame = ttk.LabelFrame(root, text="📊 分析結果 (クリックしてスケールを確認)", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # リストの列定義
         columns = ("Rank", "Scale", "Match")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
         
@@ -209,17 +207,14 @@ class JazzScaleApp:
         self.tree.column("Scale", width=400, anchor="w")
         self.tree.column("Match", width=100, anchor="center")
         
-        # スクロールバー
         scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=scrollbar.set)
         
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # ★ リスト選択時のイベントをバインド
         self.tree.bind("<<TreeviewSelect>>", self.on_scale_selected)
 
-        # 4. ステータスバー
         self.status_var = tk.StringVar(value="準備完了")
         self.lbl_status = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
@@ -237,7 +232,6 @@ class JazzScaleApp:
             winsound.PlaySound(self.file_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
 
     def run_analysis(self):
-        # UIリセット
         self.tree.delete(*self.tree.get_children())
         self.keyboard.highlight_keys(set())
         
@@ -246,43 +240,32 @@ class JazzScaleApp:
 
     def _process_analysis(self):
         self.status_var.set("分析中...")
-        
-        # 分析実行 (今回は入力音のセットも受け取る)
         scales, note_names, note_indices = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
 
         if scales is None:
             self.status_var.set(f"エラー: {note_names}")
             return
 
-        # 分析結果の保存と表示
-        self.current_input_notes = note_indices # {0, 4, 7...} のようなセット
+        self.current_input_notes = note_indices
         
-        # 鍵盤を更新 (まずは入力音だけ緑で表示)
-        self.keyboard.highlight_keys(self.current_input_notes)
+        # 初期状態は「入力音のみ」表示（この時点ではスケール未選択なので緑にする）
+        self.keyboard.highlight_keys(self.current_input_notes, self.current_input_notes)
 
-        # リストに表示
         for i, (name, score) in enumerate(scales):
             if i >= 15 or score < 0.5: break
-            rank = i + 1
-            # 1位の行だけ色を変えるなどのタグ設定も可能
-            self.tree.insert("", "end", values=(rank, name, f"{score:.0%}"), tags=(name,))
+            self.tree.insert("", "end", values=(i+1, name, f"{score:.0%}"))
 
-        self.status_var.set("分析完了。リストをクリックすると鍵盤で比較できます。")
+        self.status_var.set("分析完了。リストをクリックすると比較できます。")
 
     def on_scale_selected(self, event):
-        """リストの行がクリックされたときに呼ばれる"""
         selected_items = self.tree.selection()
-        if not selected_items:
-            return
+        if not selected_items: return
 
-        # 選択された行のスケール名を取得
         item = selected_items[0]
-        scale_name = self.tree.item(item, "values")[1] # "C# Altered" など
-        
-        # そのスケールの構成音を取得
+        scale_name = self.tree.item(item, "values")[1]
         scale_notes = self.all_scales_dict.get(scale_name, set())
         
-        # 鍵盤を再描画 (入力音=緑, スケール音=青)
+        # 色分け更新
         self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
 
 if __name__ == "__main__":
