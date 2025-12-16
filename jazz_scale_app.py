@@ -1,15 +1,14 @@
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox
-from tkinter import ttk  # モダンなウィジェット用
+from tkinter import filedialog, messagebox, ttk
 import librosa
 import numpy as np
 from collections import Counter
 import threading
 import os
-import winsound  # Windows標準の音声再生用
+import winsound
 
 # ==========================================
-# 1. 分析ロジック (Backend) - 変更なし
+# 1. 分析ロジック (Backend)
 # ==========================================
 SCALE_PATTERNS = {
     'Ionian (Major)':     [0, 2, 4, 5, 7, 9, 11],
@@ -57,7 +56,7 @@ def analyze_audio(wav_path, progress_callback):
         confident_f0 = confident_f0[~np.isnan(confident_f0)]
 
         if len(confident_f0) == 0:
-            return None, "有効な音程が検出できませんでした。"
+            return None, "有効な音程が検出できませんでした。", None
 
         midi_notes = np.round(librosa.hz_to_midi(confident_f0)).astype(int)
         pitch_classes = [note % 12 for note in midi_notes]
@@ -84,139 +83,207 @@ def analyze_audio(wav_path, progress_callback):
             scores[scale_name] = score
 
         sorted_scales = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        return sorted_scales, detected_notes
+        return sorted_scales, detected_notes, melody_pitch_classes
 
     except Exception as e:
-        return None, str(e)
+        return None, str(e), None
 
 # ==========================================
-# 2. アプリ画面 (Frontend / GUI) - 大幅改良
+# 2. GUI用部品 (Virtual Keyboard)
+# ==========================================
+class VirtualKeyboard(tk.Canvas):
+    def __init__(self, master, width=700, height=120, **kwargs):
+        super().__init__(master, width=width, height=height, bg="#f0f0f0", highlightthickness=0, **kwargs)
+        self.key_width = width // 14  # 1オクターブ強を表示
+        self.white_keys = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B
+        self.black_keys = [1, 3, 6, 8, 10]       # C#, D#, F#, G#, A#
+        self.key_ids = {} # {note_index: canvas_item_id}
+        self.draw_keyboard()
+
+    def draw_keyboard(self):
+        # 白鍵を描画
+        wk_index = 0
+        for i in range(12):
+            if i in self.white_keys:
+                x = wk_index * self.key_width
+                # tagに音番号(0=C, 1=C#...)を持たせる
+                rect = self.create_rectangle(x, 0, x + self.key_width, 120, 
+                                             fill="white", outline="black", tags=f"key_{i}")
+                self.create_text(x + self.key_width/2, 100, text=NOTE_NAMES[i], fill="#aaa")
+                self.key_ids[i] = rect
+                wk_index += 1
+
+        # 黒鍵を描画（白鍵の上に重ねる）
+        wk_index = 0
+        for i in range(12):
+            if i in self.white_keys:
+                wk_index += 1
+            elif i in self.black_keys:
+                # 黒鍵は白鍵の境界にまたがる
+                x = (wk_index * self.key_width) - (self.key_width * 0.3)
+                rect = self.create_rectangle(x, 0, x + (self.key_width * 0.6), 75, 
+                                             fill="black", outline="black", tags=f"key_{i}")
+                self.key_ids[i] = rect
+
+    def highlight_keys(self, input_notes_set, scale_notes_set=None):
+        """
+        鍵盤の色を更新する
+        input_notes_set: 入力された音声に含まれる音の集合 (例: {0, 4, 7}) -> 緑
+        scale_notes_set: 選択中のスケールに含まれる音の集合 -> 青
+        """
+        scale_notes_set = scale_notes_set or set()
+        
+        for i in range(12):
+            item_id = self.key_ids.get(i)
+            if not item_id: continue
+
+            # デフォルト色に戻す
+            default_color = "black" if i in self.black_keys else "white"
+            
+            if i in input_notes_set:
+                # 入力音に含まれている (最優先) -> 緑
+                self.itemconfig(item_id, fill="#32CD32") # LimeGreen
+            elif i in scale_notes_set:
+                # スケールに含まれている -> 水色
+                self.itemconfig(item_id, fill="#87CEFA") # LightSkyBlue
+            else:
+                # どちらでもない -> 元の色
+                self.itemconfig(item_id, fill=default_color)
+
+# ==========================================
+# 3. メインアプリ
 # ==========================================
 
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Detector")
-        self.root.geometry("700x600")
+        self.root.title("Jazz Scale Analyzer v2.0")
+        self.root.geometry("800x650")
         
-        # スタイル設定
         style = ttk.Style()
-        style.theme_use('clam') # Windowsっぽいきれいなテーマ
-        style.configure("TButton", font=("Meiryo UI", 10), padding=6)
-        style.configure("TLabel", font=("Meiryo UI", 10))
-        style.configure("Header.TLabel", font=("Meiryo UI", 14, "bold"), foreground="#333333")
+        style.theme_use('clam')
+        style.configure("Treeview", font=("Meiryo UI", 10), rowheight=25)
+        style.configure("Treeview.Heading", font=("Meiryo UI", 10, "bold"))
 
-        # --- メインコンテナ ---
-        main_frame = ttk.Frame(root, padding=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # データ保持用
+        self.all_scales_dict = generate_all_scales()
+        self.current_input_notes = set() # 現在分析中のWAVの音
+        self.file_path = None
 
-        # 1. ヘッダー
-        header = ttk.Label(main_frame, text="🎷 Jazz Phrasing Analyzer", style="Header.TLabel")
-        header.pack(pady=(0, 20))
-
-        # 2. コントロールエリア（ファイル選択・再生）
-        control_frame = ttk.LabelFrame(main_frame, text="入力ファイル", padding=15)
-        control_frame.pack(fill=tk.X, pady=(0, 15))
-
-        # ボタン配置用のサブフレーム
-        btn_frame = ttk.Frame(control_frame)
-        btn_frame.pack(fill=tk.X, pady=5)
-
-        self.btn_select = ttk.Button(btn_frame, text="📂 WAVファイルを開く", command=self.select_file)
-        self.btn_select.pack(side=tk.LEFT, padx=(0, 10))
-
+        # --- レイアウト構築 ---
+        
+        # 1. ヘッダー & コントロール
+        top_frame = ttk.Frame(root, padding=10)
+        top_frame.pack(fill=tk.X)
+        
+        ttk.Label(top_frame, text="🎷 Jazz Phrasing Analyzer", font=("Meiryo UI", 14, "bold")).pack(side=tk.LEFT)
+        
+        btn_frame = ttk.Frame(top_frame)
+        btn_frame.pack(side=tk.RIGHT)
+        self.btn_select = ttk.Button(btn_frame, text="📂 ファイル選択", command=self.select_file)
+        self.btn_select.pack(side=tk.LEFT, padx=5)
         self.btn_play = ttk.Button(btn_frame, text="▶ 再生", command=self.play_audio, state='disabled')
         self.btn_play.pack(side=tk.LEFT)
 
-        self.lbl_filename = ttk.Label(control_frame, text="ファイルが選択されていません", foreground="#666666")
-        self.lbl_filename.pack(anchor=tk.W, pady=(5, 0))
+        # 2. バーチャル鍵盤エリア
+        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (緑:入力音 / 青:スケール音)", padding=10)
+        kbd_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # 鍵盤ウィジェットの配置
+        self.keyboard = VirtualKeyboard(kbd_frame, width=760, height=120)
+        self.keyboard.pack()
 
-        # 3. 結果表示エリア
-        result_frame = ttk.LabelFrame(main_frame, text="分析結果", padding=10)
-        result_frame.pack(fill=tk.BOTH, expand=True)
+        # 3. 結果リスト (Treeviewに変更)
+        result_frame = ttk.LabelFrame(root, text="📊 分析結果 (クリックしてスケールを確認)", padding=10)
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        self.txt_result = scrolledtext.ScrolledText(result_frame, font=("Consolas", 11), state='disabled', height=15)
-        self.txt_result.pack(fill=tk.BOTH, expand=True)
+        # リストの列定義
+        columns = ("Rank", "Scale", "Match")
+        self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
+        
+        self.tree.heading("Rank", text="順位")
+        self.tree.heading("Scale", text="スケール名")
+        self.tree.heading("Match", text="適合率")
+        
+        self.tree.column("Rank", width=50, anchor="center")
+        self.tree.column("Scale", width=400, anchor="w")
+        self.tree.column("Match", width=100, anchor="center")
+        
+        # スクロールバー
+        scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+        
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # テキストの装飾タグ設定
-        self.txt_result.tag_config("header", font=("Meiryo UI", 11, "bold"), foreground="#000080")
-        self.txt_result.tag_config("notes", font=("Meiryo UI", 12), foreground="#006400")
-        self.txt_result.tag_config("top_rank", font=("Meiryo UI", 14, "bold"), foreground="#D00000", background="#FFF0F0")
-        self.txt_result.tag_config("normal_rank", font=("Meiryo UI", 11))
+        # ★ リスト選択時のイベントをバインド
+        self.tree.bind("<<TreeviewSelect>>", self.on_scale_selected)
 
         # 4. ステータスバー
-        self.status_var = tk.StringVar()
-        self.status_var.set("準備完了")
+        self.status_var = tk.StringVar(value="準備完了")
         self.lbl_status = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
-
-        self.file_path = None
 
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
         if file_path:
             self.file_path = file_path
-            self.lbl_filename.config(text=f"選択中: {os.path.basename(file_path)}")
-            self.btn_play.config(state='normal') # 再生ボタンを有効化
+            self.status_var.set(f"選択中: {os.path.basename(file_path)}")
+            self.btn_play.config(state='normal')
             self.run_analysis()
 
     def play_audio(self):
         if self.file_path:
-            # Windows標準機能で非同期再生（SND_ASYNC）
             winsound.PlaySound(self.file_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
 
-    def update_status(self, message):
-        self.status_var.set(message)
-        self.root.update_idletasks()
-
     def run_analysis(self):
+        # UIリセット
+        self.tree.delete(*self.tree.get_children())
+        self.keyboard.highlight_keys(set())
+        
         thread = threading.Thread(target=self._process_analysis)
         thread.start()
 
     def _process_analysis(self):
-        self.txt_result.config(state='normal')
-        self.txt_result.delete(1.0, tk.END)
-        self.txt_result.insert(tk.END, "分析中...\n")
-        self.txt_result.config(state='disabled')
-
-        scales, notes = analyze_audio(self.file_path, self.update_status)
-
-        self.txt_result.config(state='normal')
-        self.txt_result.delete(1.0, tk.END) # クリア
+        self.status_var.set("分析中...")
+        
+        # 分析実行 (今回は入力音のセットも受け取る)
+        scales, note_names, note_indices = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
 
         if scales is None:
-            self.txt_result.insert(tk.END, f"\n⚠ エラーが発生しました:\n{notes}\n")
-        else:
-            # 構成音の表示
-            self.txt_result.insert(tk.END, "🎹 検出されたメロディーの構成音\n", "header")
-            self.txt_result.insert(tk.END, f"   {', '.join(notes)}\n\n", "notes")
-            
-            self.txt_result.insert(tk.END, "📊 推定されるスケール (可能性の高い順)\n", "header")
-            self.txt_result.insert(tk.END, "-"*40 + "\n")
-            
-            last_score = -1
-            rank = 0
-            
-            for i, (name, score) in enumerate(scales):
-                if i >= 10 and score < last_score: break
-                if score < 0.5: break
+            self.status_var.set(f"エラー: {note_names}")
+            return
 
-                if score != last_score:
-                    rank = i + 1
-                
-                # 表示テキストの作成
-                text = f"{rank}. {name:<30} | 適合率: {score:.0%}\n"
-                
-                # 1位だけ大きく赤字で表示、それ以外は普通に表示
-                if rank == 1:
-                    self.txt_result.insert(tk.END, text, "top_rank")
-                else:
-                    self.txt_result.insert(tk.END, text, "normal_rank")
-                
-                last_score = score
-            
-        self.txt_result.config(state='disabled')
-        self.update_status("分析完了")
+        # 分析結果の保存と表示
+        self.current_input_notes = note_indices # {0, 4, 7...} のようなセット
+        
+        # 鍵盤を更新 (まずは入力音だけ緑で表示)
+        self.keyboard.highlight_keys(self.current_input_notes)
+
+        # リストに表示
+        for i, (name, score) in enumerate(scales):
+            if i >= 15 or score < 0.5: break
+            rank = i + 1
+            # 1位の行だけ色を変えるなどのタグ設定も可能
+            self.tree.insert("", "end", values=(rank, name, f"{score:.0%}"), tags=(name,))
+
+        self.status_var.set("分析完了。リストをクリックすると鍵盤で比較できます。")
+
+    def on_scale_selected(self, event):
+        """リストの行がクリックされたときに呼ばれる"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            return
+
+        # 選択された行のスケール名を取得
+        item = selected_items[0]
+        scale_name = self.tree.item(item, "values")[1] # "C# Altered" など
+        
+        # そのスケールの構成音を取得
+        scale_notes = self.all_scales_dict.get(scale_name, set())
+        
+        # 鍵盤を再描画 (入力音=緑, スケール音=青)
+        self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
 
 if __name__ == "__main__":
     root = tk.Tk()
