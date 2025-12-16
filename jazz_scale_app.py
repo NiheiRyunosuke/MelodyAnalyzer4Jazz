@@ -7,7 +7,7 @@ import threading
 import os
 import winsound
 import wave
-import tempfile # 一時ファイル作成用に追加
+import tempfile
 
 # ==========================================
 # 1. 分析ロジック (Backend)
@@ -91,104 +91,113 @@ def analyze_audio(wav_path, progress_callback):
         return None, str(e), None
 
 # ==========================================
-# 2. GUI用部品 (Virtual Keyboard with Sound Fix)
+# 2. GUI用部品 (2 Octave Virtual Keyboard)
 # ==========================================
 class VirtualKeyboard(tk.Canvas):
-    def __init__(self, master, width=700, height=120, **kwargs):
+    def __init__(self, master, width=760, height=120, **kwargs):
         super().__init__(master, width=width, height=height, bg="#f0f0f0", highlightthickness=0, **kwargs)
-        self.key_width = width // 14
-        self.white_keys = [0, 2, 4, 5, 7, 9, 11] # C, D, E, F, G, A, B
-        self.black_keys = [1, 3, 6, 8, 10]       # C#, D#, F#, G#, A#
-        self.key_ids = {}
         
-        # 音源データのキャッシュ（ファイルパス）
+        self.num_octaves = 2
+        self.total_keys = 12 * self.num_octaves # 24鍵盤
+        
+        # 白鍵の数を計算 (1オクターブあたり7個 * 2 = 14個)
+        num_white_keys = 7 * self.num_octaves
+        self.key_width = width // num_white_keys
+        
+        # Cメジャースケールの音程（白鍵の判定用）
+        self.white_key_indices = {0, 2, 4, 5, 7, 9, 11} 
+        
+        self.key_ids = {}
         self.sound_files = {}
-        # 一時ディレクトリの作成（アプリ終了時に自動削除されるように参照を保持）
         self.temp_dir = tempfile.TemporaryDirectory()
+        
         self.preload_sounds()
-
         self.draw_keyboard()
 
     def preload_sounds(self):
-        """12音階分のサイン波を生成し、一時ファイルとして保存する"""
-        sr = 44100 # サンプリングレート
-        duration = 0.4 # 音の長さ(秒)
+        """2オクターブ分 (C3〜B4) の音声を生成"""
+        sr = 44100
+        duration = 0.4
         
-        for i in range(12):
-            midi_note = 60 + i 
+        # MIDIノート 48(C3) から 71(B4) まで
+        start_note = 48 
+        
+        for i in range(self.total_keys):
+            midi_note = start_note + i
             freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
             
-            # 波形生成
             t = np.linspace(0, duration, int(sr * duration), False)
             tone = np.sin(freq * t * 2 * np.pi)
             decay = np.exp(-4 * t)
             audio_data = (tone * decay * 32767).astype(np.int16)
             
-            # 一時ファイルへのパスを作成
             file_path = os.path.join(self.temp_dir.name, f"note_{i}.wav")
-            
-            # WAVファイルとして書き出し
             with wave.open(file_path, 'wb') as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(sr)
                 wav_file.writeframes(audio_data.tobytes())
             
-            # パスを保存
             self.sound_files[i] = file_path
 
     def play_note(self, note_index):
-        """指定されたインデックスの音をファイルから再生する"""
         if note_index in self.sound_files:
-            # SND_FILENAME: ファイルから再生, SND_ASYNC: 非同期
             winsound.PlaySound(self.sound_files[note_index], winsound.SND_FILENAME | winsound.SND_ASYNC)
 
     def draw_keyboard(self):
-        # 白鍵
-        wk_index = 0
-        for i in range(12):
-            if i in self.white_keys:
-                x = wk_index * self.key_width
+        # 白鍵を描画
+        wk_count = 0
+        for i in range(self.total_keys):
+            pitch_class = i % 12
+            if pitch_class in self.white_key_indices:
+                x = wk_count * self.key_width
                 rect = self.create_rectangle(x, 0, x + self.key_width, 120, 
                                              fill="white", outline="black", tags=f"key_{i}")
-                self.create_text(x + self.key_width/2, 100, text=NOTE_NAMES[i], fill="#aaa", tags=f"label_{i}")
+                
+                # 音名ラベル (C3, D3...)
+                octave = 3 + (i // 12)
+                note_name = NOTE_NAMES[pitch_class] + str(octave)
+                
+                self.create_text(x + self.key_width/2, 100, text=note_name, fill="#aaa", font=("Arial", 8), tags=f"label_{i}")
                 self.key_ids[i] = rect
                 
                 self.tag_bind(f"key_{i}", "<Button-1>", lambda e, n=i: self.play_note(n))
                 self.tag_bind(f"label_{i}", "<Button-1>", lambda e, n=i: self.play_note(n))
-                
-                wk_index += 1
+                wk_count += 1
 
-        # 黒鍵
-        wk_index = 0
-        for i in range(12):
-            if i in self.white_keys:
-                wk_index += 1
-            elif i in self.black_keys:
-                x = (wk_index * self.key_width) - (self.key_width * 0.3)
+        # 黒鍵を描画
+        wk_count = 0
+        for i in range(self.total_keys):
+            pitch_class = i % 12
+            if pitch_class in self.white_key_indices:
+                wk_count += 1
+            else: # 黒鍵
+                x = (wk_count * self.key_width) - (self.key_width * 0.3)
                 rect = self.create_rectangle(x, 0, x + (self.key_width * 0.6), 75, 
                                              fill="black", outline="black", tags=f"key_{i}")
                 self.key_ids[i] = rect
-                
                 self.tag_bind(f"key_{i}", "<Button-1>", lambda e, n=i: self.play_note(n))
 
     def highlight_keys(self, input_notes_set, scale_notes_set=None):
         scale_notes_set = scale_notes_set or set()
-        for i in range(12):
+        
+        # 全鍵盤 (0〜23) に対してループ
+        for i in range(self.total_keys):
             item_id = self.key_ids.get(i)
             if not item_id: continue
 
-            default_color = "black" if i in self.black_keys else "white"
+            pitch_class = i % 12 # 0〜11に変換して判定
+            default_color = "black" if pitch_class not in self.white_key_indices else "white"
             
-            is_input = i in input_notes_set
-            is_scale = i in scale_notes_set
+            is_input = pitch_class in input_notes_set
+            is_scale = pitch_class in scale_notes_set
 
             if is_input and is_scale:
-                self.itemconfig(item_id, fill="#32CD32") # LimeGreen
+                self.itemconfig(item_id, fill="#32CD32") # Green
             elif is_input and not is_scale:
-                self.itemconfig(item_id, fill="#FF6347") # Tomato
+                self.itemconfig(item_id, fill="#FF6347") # Red
             elif not is_input and is_scale:
-                self.itemconfig(item_id, fill="#87CEFA") # LightSkyBlue
+                self.itemconfig(item_id, fill="#87CEFA") # Blue
             else:
                 self.itemconfig(item_id, fill=default_color)
 
@@ -199,8 +208,8 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.3")
-        self.root.geometry("800x650")
+        self.root.title("Jazz Scale Analyzer v2.4 (2 Octaves)")
+        self.root.geometry("820x680") # 横幅を少し広げました
         
         style = ttk.Style()
         style.theme_use('clam')
@@ -225,14 +234,15 @@ class JazzScaleApp:
         self.btn_play.pack(side=tk.LEFT)
 
         # Keyboard Frame
-        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (緑:一致 / 赤:スケール外 / 青:スケール音) ※クリックで試聴可", padding=10)
+        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (2 Octaves: C3-B4)", padding=10)
         kbd_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        self.keyboard = VirtualKeyboard(kbd_frame, width=760, height=120)
+        # 鍵盤エリア
+        self.keyboard = VirtualKeyboard(kbd_frame, width=780, height=120)
         self.keyboard.pack()
 
         # Result Frame
-        result_frame = ttk.LabelFrame(root, text="📊 分析結果 (クリックしてスケールを確認)", padding=10)
+        result_frame = ttk.LabelFrame(root, text="📊 分析結果", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         columns = ("Rank", "Scale", "Match")
