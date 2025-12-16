@@ -8,10 +8,10 @@ import os
 import winsound
 import wave
 import tempfile
-import time # 順番に再生するために追加
+import time
 
 # ==========================================
-# 1. 分析ロジック (Backend)
+# 1. 分析ロジック & 定数 (Backend)
 # ==========================================
 SCALE_PATTERNS = {
     'Ionian (Major)':     [0, 2, 4, 5, 7, 9, 11],
@@ -35,12 +35,27 @@ SCALE_PATTERNS = {
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
+# ジャズ理論に基づく度数表記マップ (半音の数 -> 度数名)
+INTERVAL_MAP = {
+    0: "R",        # Root
+    1: "b9",       # Minor 2nd
+    2: "9",        # Major 2nd
+    3: "b3",       # Minor 3rd (#9)
+    4: "3",        # Major 3rd
+    5: "11",       # Perfect 4th
+    6: "#11/b5",   # Tritone
+    7: "5",        # Perfect 5th
+    8: "b13",      # Minor 6th (#5)
+    9: "13",       # Major 6th
+    10: "b7",      # Minor 7th
+    11: "7"        # Major 7th
+}
+
 def generate_all_scales():
     all_scales = {}
     for root_midi in range(12):
         root_name = NOTE_NAMES[root_midi]
         for scale_name, pattern in SCALE_PATTERNS.items():
-            # セット(順序なし)として保存
             scale_notes = set([(root_midi + interval) % 12 for interval in pattern])
             full_scale_name = f"{root_name} {scale_name}"
             all_scales[full_scale_name] = scale_notes
@@ -100,7 +115,7 @@ class VirtualKeyboard(tk.Canvas):
         super().__init__(master, width=width, height=height, bg="#f0f0f0", highlightthickness=0, **kwargs)
         
         self.num_octaves = 2
-        self.total_keys = 12 * self.num_octaves # 24鍵盤
+        self.total_keys = 12 * self.num_octaves 
         
         num_white_keys = 7 * self.num_octaves
         self.key_width = width // num_white_keys
@@ -116,9 +131,8 @@ class VirtualKeyboard(tk.Canvas):
 
     def preload_sounds(self):
         sr = 44100
-        duration = 0.5 # 少し長めに
-        
-        start_note = 48 # C3
+        duration = 0.5 
+        start_note = 48 
         
         for i in range(self.total_keys):
             midi_note = start_note + i
@@ -143,27 +157,12 @@ class VirtualKeyboard(tk.Canvas):
             winsound.PlaySound(self.sound_files[note_index], winsound.SND_FILENAME | winsound.SND_ASYNC)
 
     def play_sequence(self, indices):
-        """指定されたインデックスのリストを順番に再生する (別スレッドで実行)"""
         def _run():
             for idx in indices:
                 if 0 <= idx < self.total_keys:
-                    # 鍵盤を一時的に光らせる（視覚効果）
-                    self.flash_key(idx)
                     self.play_note(idx)
-                    time.sleep(0.3) # 再生間隔
-        
+                    time.sleep(0.3) 
         threading.Thread(target=_run, daemon=True).start()
-
-    def flash_key(self, index):
-        """再生中の鍵盤を一瞬黄色にする"""
-        item_id = self.key_ids.get(index)
-        if not item_id: return
-        
-        # 現在の色を取得して保存（できないため、ロジック簡略化：黄色にして戻す処理はhighlight_keysに任せるか、簡易的に実装）
-        # ここではシンプルに「再生中は黄色」にし、後で元の色が戻る保証がないため
-        # 厳密なアニメーションは複雑になるので、今回は「音のみ」または「簡易点灯」にします。
-        # 今回はハイライトを崩さないよう、色変更は行わず音のみにします。
-        pass 
 
     def draw_keyboard(self):
         wk_count = 0
@@ -189,7 +188,7 @@ class VirtualKeyboard(tk.Canvas):
             pitch_class = i % 12
             if pitch_class in self.white_key_indices:
                 wk_count += 1
-            else: # 黒鍵
+            else: 
                 x = (wk_count * self.key_width) - (self.key_width * 0.3)
                 rect = self.create_rectangle(x, 0, x + (self.key_width * 0.6), 75, 
                                              fill="black", outline="black", tags=f"key_{i}")
@@ -225,8 +224,8 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.6 (Audio Preview)")
-        self.root.geometry("820x720")
+        self.root.title("Jazz Scale Analyzer v2.7 (Degree Analysis)")
+        self.root.geometry("820x760") # 高さ微増
         
         style = ttk.Style()
         style.theme_use('clam')
@@ -267,11 +266,19 @@ class JazzScaleApp:
         self.keyboard = VirtualKeyboard(kbd_frame, width=780, height=120)
         self.keyboard.pack()
 
+        # --- Degree Info Area (New!) ---
+        degree_frame = ttk.LabelFrame(root, text="🎓 Degree Analysis (選択したスケールに対する入力音の役割)", padding=10)
+        degree_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # 度数表示用のラベル
+        self.lbl_degree_info = ttk.Label(degree_frame, text="スケールを選択すると、ここに度数情報が表示されます。", 
+                                         font=("Meiryo UI", 11), foreground="#333")
+        self.lbl_degree_info.pack(anchor="center")
+
         # --- Result ---
         result_frame = ttk.LabelFrame(root, text="📊 分析結果", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        # 試聴ボタンエリア
         btn_area = ttk.Frame(result_frame)
         btn_area.pack(fill=tk.X, pady=(0, 5))
         
@@ -323,6 +330,7 @@ class JazzScaleApp:
         self.keyboard.highlight_keys(set())
         self.last_analysis_result = None
         self.btn_preview_scale.config(state='disabled')
+        self.lbl_degree_info.config(text="スケールを選択すると、ここに度数情報が表示されます。", foreground="#333")
         
         thread = threading.Thread(target=self._process_analysis)
         thread.start()
@@ -381,49 +389,68 @@ class JazzScaleApp:
         self.btn_preview_scale.config(state='normal')
         
         item = selected_items[0]
-        scale_name = self.tree.item(item, "values")[1]
-        scale_notes = self.all_scales_dict.get(scale_name, set())
+        full_scale_name = self.tree.item(item, "values")[1] # 例: "C Altered"
+        scale_notes = self.all_scales_dict.get(full_scale_name, set())
         
+        # 鍵盤ハイライト更新
         self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
 
+        # 度数情報の表示更新
+        self.update_degree_display(full_scale_name)
+
+    def update_degree_display(self, full_scale_name):
+        """選択されたスケールに基づいて、入力音の度数を計算して表示"""
+        try:
+            # スケール名からルート音を特定 ("C Altered" -> "C")
+            root_str = full_scale_name.split(' ')[0]
+            root_idx = NOTE_NAMES.index(root_str)
+            
+            display_parts = []
+            
+            # 入力音 (current_input_notes) のそれぞれについて度数を計算
+            # 音の高さ順にソートして表示
+            sorted_input_indices = sorted(list(self.current_input_notes))
+            
+            for note_idx in sorted_input_indices:
+                note_name = NOTE_NAMES[note_idx]
+                
+                # インターバル計算 (0〜11)
+                interval = (note_idx - root_idx) % 12
+                degree_name = INTERVAL_MAP.get(interval, "?")
+                
+                # テキスト整形
+                display_parts.append(f"{note_name}({degree_name})")
+            
+            result_text = f"【 {full_scale_name} 】のルートから見た入力音:   " + "  -  ".join(display_parts)
+            self.lbl_degree_info.config(text=result_text, foreground="#0055AA", font=("Meiryo UI", 12, "bold"))
+            
+        except Exception as e:
+            print(f"Degree Calc Error: {e}")
+            self.lbl_degree_info.config(text="度数情報の計算に失敗しました")
+
     def play_selected_scale(self):
-        """選択されているスケールを解析して、音の順番を構築して再生する"""
         selected_items = self.tree.selection()
         if not selected_items: return
 
         item = selected_items[0]
         full_scale_name = self.tree.item(item, "values")[1]
-        # 例: "C Altered" -> root="C", pattern_name="Altered"
         
         try:
-            # 名前から情報を復元
             split_name = full_scale_name.split(' ', 1)
             root_str = split_name[0]
             pattern_name = split_name[1]
             
-            # 定義からパターン（半音の間隔リスト）を取得
             pattern = SCALE_PATTERNS.get(pattern_name)
-            
-            if not pattern:
-                # "(Major)" のような表記揺れへの対応が必要な場合の保険
-                # (現在のコードでは辞書のキーと完全一致するはずなのでこのままでOK)
-                return 
+            if not pattern: return 
 
             root_midi = NOTE_NAMES.index(root_str)
-            
-            # 再生するキーのインデックスを作成 (C3=0)
-            # ルート音が鍵盤のどこにあるか？ (0〜11)
             start_key_index = root_midi 
             
             sequence = []
-            # パターン通りに音を追加
             for interval in pattern:
                 sequence.append(start_key_index + interval)
-            
-            # 最後にオクターブ上のルート音を追加
             sequence.append(start_key_index + 12)
             
-            # シーケンス再生 (再生はVirtualKeyboard側でスレッド処理される)
             self.keyboard.play_sequence(sequence)
 
         except Exception as e:
