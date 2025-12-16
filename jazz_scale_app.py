@@ -8,6 +8,7 @@ import os
 import winsound
 import wave
 import tempfile
+import time # 順番に再生するために追加
 
 # ==========================================
 # 1. 分析ロジック (Backend)
@@ -39,6 +40,7 @@ def generate_all_scales():
     for root_midi in range(12):
         root_name = NOTE_NAMES[root_midi]
         for scale_name, pattern in SCALE_PATTERNS.items():
+            # セット(順序なし)として保存
             scale_notes = set([(root_midi + interval) % 12 for interval in pattern])
             full_scale_name = f"{root_name} {scale_name}"
             all_scales[full_scale_name] = scale_notes
@@ -100,7 +102,6 @@ class VirtualKeyboard(tk.Canvas):
         self.num_octaves = 2
         self.total_keys = 12 * self.num_octaves # 24鍵盤
         
-        # 白鍵の数を計算 (14個)
         num_white_keys = 7 * self.num_octaves
         self.key_width = width // num_white_keys
         
@@ -114,9 +115,8 @@ class VirtualKeyboard(tk.Canvas):
         self.draw_keyboard()
 
     def preload_sounds(self):
-        """2オクターブ分 (C3〜B4) の音声を生成"""
         sr = 44100
-        duration = 0.4
+        duration = 0.5 # 少し長めに
         
         start_note = 48 # C3
         
@@ -126,7 +126,7 @@ class VirtualKeyboard(tk.Canvas):
             
             t = np.linspace(0, duration, int(sr * duration), False)
             tone = np.sin(freq * t * 2 * np.pi)
-            decay = np.exp(-4 * t)
+            decay = np.exp(-5 * t)
             audio_data = (tone * decay * 32767).astype(np.int16)
             
             file_path = os.path.join(self.temp_dir.name, f"note_{i}.wav")
@@ -141,6 +141,29 @@ class VirtualKeyboard(tk.Canvas):
     def play_note(self, note_index):
         if note_index in self.sound_files:
             winsound.PlaySound(self.sound_files[note_index], winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+    def play_sequence(self, indices):
+        """指定されたインデックスのリストを順番に再生する (別スレッドで実行)"""
+        def _run():
+            for idx in indices:
+                if 0 <= idx < self.total_keys:
+                    # 鍵盤を一時的に光らせる（視覚効果）
+                    self.flash_key(idx)
+                    self.play_note(idx)
+                    time.sleep(0.3) # 再生間隔
+        
+        threading.Thread(target=_run, daemon=True).start()
+
+    def flash_key(self, index):
+        """再生中の鍵盤を一瞬黄色にする"""
+        item_id = self.key_ids.get(index)
+        if not item_id: return
+        
+        # 現在の色を取得して保存（できないため、ロジック簡略化：黄色にして戻す処理はhighlight_keysに任せるか、簡易的に実装）
+        # ここではシンプルに「再生中は黄色」にし、後で元の色が戻る保証がないため
+        # 厳密なアニメーションは複雑になるので、今回は「音のみ」または「簡易点灯」にします。
+        # 今回はハイライトを崩さないよう、色変更は行わず音のみにします。
+        pass 
 
     def draw_keyboard(self):
         wk_count = 0
@@ -202,8 +225,8 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.5 (Root Filter)")
-        self.root.geometry("820x700")
+        self.root.title("Jazz Scale Analyzer v2.6 (Audio Preview)")
+        self.root.geometry("820x720")
         
         style = ttk.Style()
         style.theme_use('clam')
@@ -214,35 +237,31 @@ class JazzScaleApp:
         self.current_input_notes = set()
         self.file_path = None
 
-        # --- UI Header ---
+        # --- Header ---
         top_frame = ttk.Frame(root, padding=10)
         top_frame.pack(fill=tk.X)
         
         ttk.Label(top_frame, text="🎷 Jazz Phrasing Analyzer", font=("Meiryo UI", 14, "bold")).pack(side=tk.LEFT)
         
-        # コントロールエリア（右側）
         ctrl_frame = ttk.Frame(top_frame)
         ctrl_frame.pack(side=tk.RIGHT)
 
-        # 1. ルート音選択コンボボックス (NEW!)
         ttk.Label(ctrl_frame, text="ルート音指定:").pack(side=tk.LEFT, padx=(0, 5))
-        
         self.root_var = tk.StringVar()
         self.cmb_root = ttk.Combobox(ctrl_frame, textvariable=self.root_var, state="readonly", width=8)
         self.cmb_root['values'] = ["指定なし"] + NOTE_NAMES
-        self.cmb_root.current(0) # デフォルトは「指定なし」
+        self.cmb_root.current(0)
         self.cmb_root.pack(side=tk.LEFT, padx=(0, 15))
         self.cmb_root.bind("<<ComboboxSelected>>", self.on_root_changed)
 
-        # 2. ファイル選択 & 再生
         self.btn_select = ttk.Button(ctrl_frame, text="📂 ファイル選択", command=self.select_file)
         self.btn_select.pack(side=tk.LEFT, padx=5)
         
-        self.btn_play = ttk.Button(ctrl_frame, text="▶ 再生", command=self.play_audio, state='disabled')
-        self.btn_play.pack(side=tk.LEFT)
+        self.btn_play_wav = ttk.Button(ctrl_frame, text="▶ 音声再生", command=self.play_audio, state='disabled')
+        self.btn_play_wav.pack(side=tk.LEFT)
 
         # --- Keyboard ---
-        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (2 Octaves: C3-B4)", padding=10)
+        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (C3-B4)", padding=10)
         kbd_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.keyboard = VirtualKeyboard(kbd_frame, width=780, height=120)
@@ -251,6 +270,15 @@ class JazzScaleApp:
         # --- Result ---
         result_frame = ttk.LabelFrame(root, text="📊 分析結果", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # 試聴ボタンエリア
+        btn_area = ttk.Frame(result_frame)
+        btn_area.pack(fill=tk.X, pady=(0, 5))
+        
+        self.btn_preview_scale = ttk.Button(btn_area, text="🔊 選択したスケールを試聴する", command=self.play_selected_scale, state='disabled')
+        self.btn_preview_scale.pack(side=tk.RIGHT)
+        
+        ttk.Label(btn_area, text="リストをクリックして選択してください").pack(side=tk.LEFT)
 
         columns = ("Rank", "Scale", "Match")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
@@ -276,15 +304,14 @@ class JazzScaleApp:
         self.lbl_status = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 分析結果の一時保存用 (再フィルタリング用)
-        self.last_analysis_result = None # (scales, notes, indices)
+        self.last_analysis_result = None
 
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
         if file_path:
             self.file_path = file_path
             self.status_var.set(f"選択中: {os.path.basename(file_path)}")
-            self.btn_play.config(state='normal')
+            self.btn_play_wav.config(state='normal')
             self.run_analysis()
 
     def play_audio(self):
@@ -292,10 +319,10 @@ class JazzScaleApp:
             winsound.PlaySound(self.file_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
 
     def run_analysis(self):
-        # 分析開始時はUIをクリア
         self.tree.delete(*self.tree.get_children())
         self.keyboard.highlight_keys(set())
         self.last_analysis_result = None
+        self.btn_preview_scale.config(state='disabled')
         
         thread = threading.Thread(target=self._process_analysis)
         thread.start()
@@ -305,42 +332,31 @@ class JazzScaleApp:
         result = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
         
         scales, note_names, note_indices = result
-
         if scales is None:
             self.status_var.set(f"エラー: {note_names}")
             return
 
-        # 結果を保持 (フィルタリング操作のため)
         self.last_analysis_result = result
         self.current_input_notes = note_indices
-        
-        # 画面更新 (メインスレッドで行うべきだが、TkinterはThreadセーフな部分もあるため簡易実装)
         self.update_result_list()
 
     def update_result_list(self):
-        """現在のルート音設定に基づいてリストを更新する"""
-        if not self.last_analysis_result:
-            return
-
+        if not self.last_analysis_result: return
         scales, _, _ = self.last_analysis_result
         target_root = self.root_var.get()
 
         self.tree.delete(*self.tree.get_children())
-        self.keyboard.highlight_keys(self.current_input_notes, self.current_input_notes) # 初期状態
+        self.keyboard.highlight_keys(self.current_input_notes, self.current_input_notes)
 
         display_count = 0
         rank = 0
         last_score = -1
 
         for name, score in scales:
-            # --- フィルタリング処理 ---
-            # スケール名 (例: "C Major") からルート音 ("C") を取り出して比較
             scale_root = name.split()[0]
-            
             if target_root != "指定なし" and scale_root != target_root:
-                continue # ルート音が一致しない場合はスキップ
+                continue
             
-            # --- 表示処理 ---
             if display_count >= 20 or score < 0.5: break
             
             if score != last_score:
@@ -350,25 +366,68 @@ class JazzScaleApp:
             last_score = score
             display_count += 1
 
-        if display_count == 0:
-            self.status_var.set(f"分析完了: ルート {target_root} に一致するスケールは見つかりませんでした。")
-        else:
-            self.status_var.set(f"分析完了: {display_count} 件のスケールを表示 (ルート: {target_root})")
+        self.status_var.set(f"分析完了: {display_count} 件表示")
 
     def on_root_changed(self, event):
-        """ドロップダウンが変更されたらリストを更新"""
         if self.last_analysis_result:
             self.update_result_list()
 
     def on_scale_selected(self, event):
         selected_items = self.tree.selection()
-        if not selected_items: return
+        if not selected_items:
+            self.btn_preview_scale.config(state='disabled')
+            return
 
+        self.btn_preview_scale.config(state='normal')
+        
         item = selected_items[0]
         scale_name = self.tree.item(item, "values")[1]
         scale_notes = self.all_scales_dict.get(scale_name, set())
         
         self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
+
+    def play_selected_scale(self):
+        """選択されているスケールを解析して、音の順番を構築して再生する"""
+        selected_items = self.tree.selection()
+        if not selected_items: return
+
+        item = selected_items[0]
+        full_scale_name = self.tree.item(item, "values")[1]
+        # 例: "C Altered" -> root="C", pattern_name="Altered"
+        
+        try:
+            # 名前から情報を復元
+            split_name = full_scale_name.split(' ', 1)
+            root_str = split_name[0]
+            pattern_name = split_name[1]
+            
+            # 定義からパターン（半音の間隔リスト）を取得
+            pattern = SCALE_PATTERNS.get(pattern_name)
+            
+            if not pattern:
+                # "(Major)" のような表記揺れへの対応が必要な場合の保険
+                # (現在のコードでは辞書のキーと完全一致するはずなのでこのままでOK)
+                return 
+
+            root_midi = NOTE_NAMES.index(root_str)
+            
+            # 再生するキーのインデックスを作成 (C3=0)
+            # ルート音が鍵盤のどこにあるか？ (0〜11)
+            start_key_index = root_midi 
+            
+            sequence = []
+            # パターン通りに音を追加
+            for interval in pattern:
+                sequence.append(start_key_index + interval)
+            
+            # 最後にオクターブ上のルート音を追加
+            sequence.append(start_key_index + 12)
+            
+            # シーケンス再生 (再生はVirtualKeyboard側でスレッド処理される)
+            self.keyboard.play_sequence(sequence)
+
+        except Exception as e:
+            print(f"Play Error: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
