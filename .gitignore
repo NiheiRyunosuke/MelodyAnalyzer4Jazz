@@ -1,0 +1,18 @@
+# Pythonの一時ファイル
+__pycache__/
+*.pyc
+
+# PyInstallerの生成物 (これらはGitに含めない)
+build/
+dist/
+
+# 仮想環境を使っている場合 (念のため)
+venv/
+env/
+
+# OSのシステムファイル
+.DS_Store
+Thumbs.db
+
+# VS Codeの設定フォルダ (個人の設定を含みたくない場合)
+.vscode/
