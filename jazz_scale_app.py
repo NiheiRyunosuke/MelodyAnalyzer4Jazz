@@ -9,6 +9,7 @@ import winsound
 import wave
 import tempfile
 import time
+import pyaudio # 録音用ライブラリ
 
 # ==========================================
 # 1. 分析ロジック & 定数 (Backend)
@@ -35,20 +36,9 @@ SCALE_PATTERNS = {
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-# ジャズ理論に基づく度数表記マップ (半音の数 -> 度数名)
 INTERVAL_MAP = {
-    0: "R",        # Root
-    1: "b9",       # Minor 2nd
-    2: "9",        # Major 2nd
-    3: "b3",       # Minor 3rd (#9)
-    4: "3",        # Major 3rd
-    5: "11",       # Perfect 4th
-    6: "#11/b5",   # Tritone
-    7: "5",        # Perfect 5th
-    8: "b13",      # Minor 6th (#5)
-    9: "13",       # Major 6th
-    10: "b7",      # Minor 7th
-    11: "7"        # Major 7th
+    0: "R", 1: "b9", 2: "9", 3: "b3", 4: "3", 5: "11",
+    6: "#11/b5", 7: "5", 8: "b13", 9: "13", 10: "b7", 11: "7"
 }
 
 def generate_all_scales():
@@ -224,17 +214,22 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.7 (Degree Analysis)")
-        self.root.geometry("820x760") # 高さ微増
+        self.root.title("Jazz Scale Analyzer v2.8 (Recording)")
+        self.root.geometry("820x780")
         
         style = ttk.Style()
         style.theme_use('clam')
         style.configure("Treeview", font=("Meiryo UI", 10), rowheight=25)
         style.configure("Treeview.Heading", font=("Meiryo UI", 10, "bold"))
+        style.configure("Rec.TButton", foreground="red")
 
         self.all_scales_dict = generate_all_scales()
         self.current_input_notes = set()
         self.file_path = None
+        
+        # 録音関連の状態変数
+        self.is_recording = False
+        self.frames = []
 
         # --- Header ---
         top_frame = ttk.Frame(root, padding=10)
@@ -245,18 +240,27 @@ class JazzScaleApp:
         ctrl_frame = ttk.Frame(top_frame)
         ctrl_frame.pack(side=tk.RIGHT)
 
-        ttk.Label(ctrl_frame, text="ルート音指定:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(ctrl_frame, text="ルート:").pack(side=tk.LEFT, padx=(0, 2))
         self.root_var = tk.StringVar()
-        self.cmb_root = ttk.Combobox(ctrl_frame, textvariable=self.root_var, state="readonly", width=8)
+        self.cmb_root = ttk.Combobox(ctrl_frame, textvariable=self.root_var, state="readonly", width=5)
         self.cmb_root['values'] = ["指定なし"] + NOTE_NAMES
         self.cmb_root.current(0)
-        self.cmb_root.pack(side=tk.LEFT, padx=(0, 15))
+        self.cmb_root.pack(side=tk.LEFT, padx=(0, 10))
         self.cmb_root.bind("<<ComboboxSelected>>", self.on_root_changed)
 
-        self.btn_select = ttk.Button(ctrl_frame, text="📂 ファイル選択", command=self.select_file)
-        self.btn_select.pack(side=tk.LEFT, padx=5)
+        # 録音ボタン (New!)
+        self.btn_rec_start = ttk.Button(ctrl_frame, text="🔴 録音開始", command=self.start_recording, style="Rec.TButton")
+        self.btn_rec_start.pack(side=tk.LEFT, padx=2)
         
-        self.btn_play_wav = ttk.Button(ctrl_frame, text="▶ 音声再生", command=self.play_audio, state='disabled')
+        self.btn_rec_stop = ttk.Button(ctrl_frame, text="⬛ 停止", command=self.stop_recording, state='disabled')
+        self.btn_rec_stop.pack(side=tk.LEFT, padx=2)
+
+        ttk.Separator(ctrl_frame, orient='vertical').pack(side=tk.LEFT, padx=10, fill='y')
+
+        self.btn_select = ttk.Button(ctrl_frame, text="📂 開く", command=self.select_file, width=8)
+        self.btn_select.pack(side=tk.LEFT, padx=2)
+        
+        self.btn_play_wav = ttk.Button(ctrl_frame, text="▶ 再生", command=self.play_audio, state='disabled', width=8)
         self.btn_play_wav.pack(side=tk.LEFT)
 
         # --- Keyboard ---
@@ -266,12 +270,11 @@ class JazzScaleApp:
         self.keyboard = VirtualKeyboard(kbd_frame, width=780, height=120)
         self.keyboard.pack()
 
-        # --- Degree Info Area (New!) ---
-        degree_frame = ttk.LabelFrame(root, text="🎓 Degree Analysis (選択したスケールに対する入力音の役割)", padding=10)
+        # --- Degree Info Area ---
+        degree_frame = ttk.LabelFrame(root, text="🎓 Degree Analysis", padding=10)
         degree_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        # 度数表示用のラベル
-        self.lbl_degree_info = ttk.Label(degree_frame, text="スケールを選択すると、ここに度数情報が表示されます。", 
+        self.lbl_degree_info = ttk.Label(degree_frame, text="スケールを選択すると度数情報が表示されます", 
                                          font=("Meiryo UI", 11), foreground="#333")
         self.lbl_degree_info.pack(anchor="center")
 
@@ -282,10 +285,10 @@ class JazzScaleApp:
         btn_area = ttk.Frame(result_frame)
         btn_area.pack(fill=tk.X, pady=(0, 5))
         
-        self.btn_preview_scale = ttk.Button(btn_area, text="🔊 選択したスケールを試聴する", command=self.play_selected_scale, state='disabled')
+        self.btn_preview_scale = ttk.Button(btn_area, text="🔊 スケール試聴", command=self.play_selected_scale, state='disabled')
         self.btn_preview_scale.pack(side=tk.RIGHT)
         
-        ttk.Label(btn_area, text="リストをクリックして選択してください").pack(side=tk.LEFT)
+        ttk.Label(btn_area, text="リスト選択で詳細を表示").pack(side=tk.LEFT)
 
         columns = ("Rank", "Scale", "Match")
         self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="browse")
@@ -313,6 +316,73 @@ class JazzScaleApp:
 
         self.last_analysis_result = None
 
+    # --- Recording Functions ---
+    def start_recording(self):
+        self.is_recording = True
+        self.frames = []
+        self.btn_rec_start.config(state='disabled')
+        self.btn_rec_stop.config(state='normal')
+        self.btn_select.config(state='disabled') # 録音中はファイル選択不可
+        self.status_var.set("🔴 録音中... (マイクに向かって演奏してください)")
+        
+        # 録音用スレッド開始
+        threading.Thread(target=self._record_thread).start()
+
+    def stop_recording(self):
+        self.is_recording = False
+        # ボタンの状態更新はスレッド終了後に行われるが、即時フィードバックのためにここでも設定
+        self.status_var.set("録音停止。保存中...")
+
+    def _record_thread(self):
+        CHUNK = 1024
+        FORMAT = pyaudio.paInt16
+        CHANNELS = 1
+        RATE = 44100
+        
+        try:
+            p = pyaudio.PyAudio()
+            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+            
+            while self.is_recording:
+                data = stream.read(CHUNK)
+                self.frames.append(data)
+                
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+
+            # 録音データを一時ファイルとして保存
+            filename = f"rec_{int(time.time())}.wav"
+            # わかりやすくカレントディレクトリに保存（一時フォルダだとユーザーが見つけにくいため）
+            save_path = os.path.abspath(filename)
+            
+            wf = wave.open(save_path, 'wb')
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(p.get_sample_size(FORMAT))
+            wf.setframerate(RATE)
+            wf.writeframes(b''.join(self.frames))
+            wf.close()
+            
+            # 保存完了後の処理
+            self.file_path = save_path
+            
+            # UI更新 (メインスレッドで行うべき処理を簡易的に記述)
+            self.btn_rec_start.config(state='normal')
+            self.btn_rec_stop.config(state='disabled')
+            self.btn_select.config(state='normal')
+            self.btn_play_wav.config(state='normal')
+            self.status_var.set(f"録音完了: {filename} を分析中...")
+            
+            # 自動的に分析を実行
+            self.run_analysis()
+            
+        except Exception as e:
+            self.status_var.set(f"録音エラー: {e}")
+            self.is_recording = False
+            self.btn_rec_start.config(state='normal')
+            self.btn_rec_stop.config(state='disabled')
+
+    # --- Existing Functions ---
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
         if file_path:
@@ -330,13 +400,13 @@ class JazzScaleApp:
         self.keyboard.highlight_keys(set())
         self.last_analysis_result = None
         self.btn_preview_scale.config(state='disabled')
-        self.lbl_degree_info.config(text="スケールを選択すると、ここに度数情報が表示されます。", foreground="#333")
+        self.lbl_degree_info.config(text="スケールを選択すると度数情報が表示されます", foreground="#333")
         
         thread = threading.Thread(target=self._process_analysis)
         thread.start()
 
     def _process_analysis(self):
-        self.status_var.set("分析中...")
+        # self.status_var.set("分析中...") # 録音フローとかぶるので削除
         result = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
         
         scales, note_names, note_indices = result
@@ -389,36 +459,24 @@ class JazzScaleApp:
         self.btn_preview_scale.config(state='normal')
         
         item = selected_items[0]
-        full_scale_name = self.tree.item(item, "values")[1] # 例: "C Altered"
+        full_scale_name = self.tree.item(item, "values")[1] 
         scale_notes = self.all_scales_dict.get(full_scale_name, set())
         
-        # 鍵盤ハイライト更新
         self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
-
-        # 度数情報の表示更新
         self.update_degree_display(full_scale_name)
 
     def update_degree_display(self, full_scale_name):
-        """選択されたスケールに基づいて、入力音の度数を計算して表示"""
         try:
-            # スケール名からルート音を特定 ("C Altered" -> "C")
             root_str = full_scale_name.split(' ')[0]
             root_idx = NOTE_NAMES.index(root_str)
             
             display_parts = []
-            
-            # 入力音 (current_input_notes) のそれぞれについて度数を計算
-            # 音の高さ順にソートして表示
             sorted_input_indices = sorted(list(self.current_input_notes))
             
             for note_idx in sorted_input_indices:
                 note_name = NOTE_NAMES[note_idx]
-                
-                # インターバル計算 (0〜11)
                 interval = (note_idx - root_idx) % 12
                 degree_name = INTERVAL_MAP.get(interval, "?")
-                
-                # テキスト整形
                 display_parts.append(f"{note_name}({degree_name})")
             
             result_text = f"【 {full_scale_name} 】のルートから見た入力音:   " + "  -  ".join(display_parts)
