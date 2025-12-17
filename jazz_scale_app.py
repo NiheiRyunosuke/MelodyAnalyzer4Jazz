@@ -9,7 +9,7 @@ import winsound
 import wave
 import tempfile
 import time
-import pyaudio # 録音用ライブラリ
+import pyaudio
 
 # ==========================================
 # 1. 分析ロジック & 定数 (Backend)
@@ -214,7 +214,7 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.8 (Recording)")
+        self.root.title("Jazz Scale Analyzer v2.9 (Built-in Mic)")
         self.root.geometry("820x780")
         
         style = ttk.Style()
@@ -230,6 +230,9 @@ class JazzScaleApp:
         # 録音関連の状態変数
         self.is_recording = False
         self.frames = []
+        
+        # ★ マイクデバイスID (リストから判明したID:1を使用)
+        self.mic_device_index = 1 
 
         # --- Header ---
         top_frame = ttk.Frame(root, padding=10)
@@ -248,7 +251,7 @@ class JazzScaleApp:
         self.cmb_root.pack(side=tk.LEFT, padx=(0, 10))
         self.cmb_root.bind("<<ComboboxSelected>>", self.on_root_changed)
 
-        # 録音ボタン (New!)
+        # 録音ボタン
         self.btn_rec_start = ttk.Button(ctrl_frame, text="🔴 録音開始", command=self.start_recording, style="Rec.TButton")
         self.btn_rec_start.pack(side=tk.LEFT, padx=2)
         
@@ -322,15 +325,13 @@ class JazzScaleApp:
         self.frames = []
         self.btn_rec_start.config(state='disabled')
         self.btn_rec_stop.config(state='normal')
-        self.btn_select.config(state='disabled') # 録音中はファイル選択不可
+        self.btn_select.config(state='disabled') 
         self.status_var.set("🔴 録音中... (マイクに向かって演奏してください)")
         
-        # 録音用スレッド開始
         threading.Thread(target=self._record_thread).start()
 
     def stop_recording(self):
         self.is_recording = False
-        # ボタンの状態更新はスレッド終了後に行われるが、即時フィードバックのためにここでも設定
         self.status_var.set("録音停止。保存中...")
 
     def _record_thread(self):
@@ -341,7 +342,14 @@ class JazzScaleApp:
         
         try:
             p = pyaudio.PyAudio()
-            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+            
+            # ★ ここでデバイスIDを指定 (ID: 1)
+            stream = p.open(format=FORMAT, 
+                            channels=CHANNELS, 
+                            rate=RATE, 
+                            input=True, 
+                            frames_per_buffer=CHUNK,
+                            input_device_index=self.mic_device_index) # <--- 強制指定
             
             while self.is_recording:
                 data = stream.read(CHUNK)
@@ -351,9 +359,7 @@ class JazzScaleApp:
             stream.close()
             p.terminate()
 
-            # 録音データを一時ファイルとして保存
             filename = f"rec_{int(time.time())}.wav"
-            # わかりやすくカレントディレクトリに保存（一時フォルダだとユーザーが見つけにくいため）
             save_path = os.path.abspath(filename)
             
             wf = wave.open(save_path, 'wb')
@@ -363,17 +369,14 @@ class JazzScaleApp:
             wf.writeframes(b''.join(self.frames))
             wf.close()
             
-            # 保存完了後の処理
             self.file_path = save_path
             
-            # UI更新 (メインスレッドで行うべき処理を簡易的に記述)
             self.btn_rec_start.config(state='normal')
             self.btn_rec_stop.config(state='disabled')
             self.btn_select.config(state='normal')
             self.btn_play_wav.config(state='normal')
             self.status_var.set(f"録音完了: {filename} を分析中...")
             
-            # 自動的に分析を実行
             self.run_analysis()
             
         except Exception as e:
@@ -406,7 +409,6 @@ class JazzScaleApp:
         thread.start()
 
     def _process_analysis(self):
-        # self.status_var.set("分析中...") # 録音フローとかぶるので削除
         result = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
         
         scales, note_names, note_indices = result
