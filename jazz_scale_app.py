@@ -31,7 +31,8 @@ SCALE_PATTERNS = {
     'Major Pentatonic':   [0, 2, 4, 7, 9],
     'Minor Pentatonic':   [0, 3, 5, 7, 10],
     'Blues Scale':        [0, 3, 5, 6, 7, 10],
-    'Bebop Dominant':     [0, 2, 4, 5, 7, 9, 10, 11]
+    'Bebop Dominant':     [0, 2, 4, 5, 7, 9, 10, 11],
+    'Harmonic Minor': [0, 2, 3, 5, 7, 8, 11],
 }
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
