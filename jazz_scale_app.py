@@ -68,30 +68,24 @@ def analyze_audio(wav_path, progress_callback):
         if len(confident_f0) == 0:
             return None, "有効な音程が検出できませんでした。", None
 
-        # ここで MIDIノート番号（絶対値）を取得
         midi_notes = np.round(librosa.hz_to_midi(confident_f0)).astype(int)
         
-        # 1. 絶対音高（MIDI番号）でカウントして、入力音を特定する
         midi_counts = Counter(midi_notes)
         total_notes = sum(midi_counts.values())
         min_count = total_notes * 0.02
         
-        # 実際に検出されたMIDI番号のセット (例: {48, 52, 60})
         melody_midi_notes = set(
             [note for note, count in midi_counts.items() if count >= min_count]
         )
         
-        # 2. スケール判定用に「音名(0-11)」のセットも作る
         melody_pitch_classes = set([n % 12 for n in melody_midi_notes])
 
-        # 保険: 何も残らなかった場合
         if not melody_pitch_classes and total_notes > 0:
-            top_common = midi_counts.most_common(5) # 上位5つを見る
+            top_common = midi_counts.most_common(5) 
             melody_midi_notes = set([n[0] for n in top_common])
             melody_pitch_classes = set([n % 12 for n in melody_midi_notes])
 
         detected_notes = sorted([NOTE_NAMES[n % 12] for n in melody_midi_notes])
-        # 重複排除して表示用にする
         detected_notes = sorted(list(set(detected_notes)), key=lambda x: NOTE_NAMES.index(x) if x in NOTE_NAMES else 0)
         
         progress_callback("スケール理論と照合中...")
@@ -107,21 +101,20 @@ def analyze_audio(wav_path, progress_callback):
             scores[scale_name] = score
 
         sorted_scales = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        
-        # 戻り値の3つ目を「MIDI番号のセット」に変更
         return sorted_scales, detected_notes, melody_midi_notes
 
     except Exception as e:
         return None, str(e), None
 
 # ==========================================
-# 2. GUI用部品 (2 Octave Virtual Keyboard)
+# 2. GUI用部品 (4 Octave Virtual Keyboard)
 # ==========================================
 class VirtualKeyboard(tk.Canvas):
-    def __init__(self, master, width=760, height=120, **kwargs):
+    def __init__(self, master, width=1050, height=120, **kwargs):
         super().__init__(master, width=width, height=height, bg="#f0f0f0", highlightthickness=0, **kwargs)
         
-        self.num_octaves = 2
+        # ★ここを変更: 2オクターブ -> 4オクターブ
+        self.num_octaves = 4
         self.total_keys = 12 * self.num_octaves 
         
         num_white_keys = 7 * self.num_octaves
@@ -139,7 +132,8 @@ class VirtualKeyboard(tk.Canvas):
     def preload_sounds(self):
         sr = 44100
         duration = 0.5 
-        start_note = 48 # C3
+        # ★ここを変更: スタートを C2 (MIDI 36) に下げる
+        start_note = 36 
         
         for i in range(self.total_keys):
             midi_note = start_note + i
@@ -166,8 +160,11 @@ class VirtualKeyboard(tk.Canvas):
     def play_sequence(self, indices):
         def _run():
             for idx in indices:
-                if 0 <= idx < self.total_keys:
-                    self.play_note(idx)
+                # 4オクターブの中央付近(C3-C5)で再生するようにオフセット調整
+                # C2スタートなので、+12 すれば C3スタートの感覚で再生できる
+                adj_idx = idx + 12 
+                if 0 <= adj_idx < self.total_keys:
+                    self.play_note(adj_idx)
                     time.sleep(0.3) 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -180,7 +177,8 @@ class VirtualKeyboard(tk.Canvas):
                 rect = self.create_rectangle(x, 0, x + self.key_width, 120, 
                                              fill="white", outline="black", tags=f"key_{i}")
                 
-                octave = 3 + (i // 12)
+                # ★ここを変更: C2スタートなので +2
+                octave = 2 + (i // 12)
                 note_name = NOTE_NAMES[pitch_class] + str(octave)
                 
                 self.create_text(x + self.key_width/2, 100, text=note_name, fill="#aaa", font=("Arial", 8), tags=f"label_{i}")
@@ -203,34 +201,28 @@ class VirtualKeyboard(tk.Canvas):
                 self.tag_bind(f"key_{i}", "<Button-1>", lambda e, n=i: self.play_note(n))
 
     def highlight_keys(self, input_midi_set, scale_pc_set=None):
-        """
-        input_midi_set: 検出されたMIDI番号のセット (例: {48, 55}) -> 絶対的な高さ
-        scale_pc_set: スケールの構成音 (0-11) -> 相対的な音名
-        """
         scale_pc_set = scale_pc_set or set()
-        start_note = 48 # C3
+        # ★ここを変更: スタートは C2 (36)
+        start_note = 36
         
         for i in range(self.total_keys):
             item_id = self.key_ids.get(i)
             if not item_id: continue
 
-            # この鍵盤の絶対MIDI番号と、音名クラス(0-11)を計算
             current_midi = start_note + i
             current_pc = current_midi % 12
             
             default_color = "black" if current_pc not in self.white_key_indices else "white"
             
-            # 判定ロジックの変更点:
-            # 入力音は「絶対値」で判定、スケール音は「音名」で判定
             is_input = current_midi in input_midi_set
             is_scale = current_pc in scale_pc_set
 
             if is_input and is_scale:
-                self.itemconfig(item_id, fill="#32CD32") # Green (正解かつ弾いた音)
+                self.itemconfig(item_id, fill="#32CD32") 
             elif is_input and not is_scale:
-                self.itemconfig(item_id, fill="#FF6347") # Red (外した音)
+                self.itemconfig(item_id, fill="#FF6347")
             elif not is_input and is_scale:
-                self.itemconfig(item_id, fill="#87CEFA") # Blue (スケールガイド)
+                self.itemconfig(item_id, fill="#87CEFA") 
             else:
                 self.itemconfig(item_id, fill=default_color)
 
@@ -241,8 +233,9 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.11 (Octave Sensitive)")
-        self.root.geometry("820x780")
+        self.root.title("Jazz Scale Analyzer v2.12 (4 Octaves: C2-B5)")
+        # ★ここを変更: 横幅を広げる
+        self.root.geometry("1100x780")
         
         style = ttk.Style()
         style.theme_use('clam')
@@ -252,7 +245,6 @@ class JazzScaleApp:
 
         self.all_scales_dict = generate_all_scales()
         
-        # MIDI番号のセットを保持するように変更
         self.current_input_midi = set()
         self.file_path = None
         
@@ -292,10 +284,12 @@ class JazzScaleApp:
         self.btn_play_wav.pack(side=tk.LEFT)
 
         # --- Keyboard ---
-        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (C3-B4)", padding=10)
+        # ★ここを変更: ラベル更新
+        kbd_frame = ttk.LabelFrame(root, text="🎹 Visualizer (C2-B5)", padding=10)
         kbd_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        self.keyboard = VirtualKeyboard(kbd_frame, width=780, height=120)
+        # ★ここを変更: width を 1060 に拡大
+        self.keyboard = VirtualKeyboard(kbd_frame, width=1060, height=120)
         self.keyboard.pack()
 
         # --- Degree Info Area ---
@@ -425,14 +419,13 @@ class JazzScaleApp:
     def _process_analysis(self):
         result = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
         
-        # result: (scales, detected_note_names, melody_midi_notes)
         scales, note_names, midi_notes = result
         if scales is None:
             self.status_var.set(f"エラー: {note_names}")
             return
 
         self.last_analysis_result = result
-        self.current_input_midi = midi_notes # ここがMIDI番号のセットになる
+        self.current_input_midi = midi_notes
         self.update_result_list()
 
     def update_result_list(self):
@@ -441,7 +434,6 @@ class JazzScaleApp:
         target_root = self.root_var.get()
 
         self.tree.delete(*self.tree.get_children())
-        # MIDI番号を渡す
         self.keyboard.highlight_keys(self.current_input_midi, set()) 
 
         display_count = 0
@@ -480,7 +472,6 @@ class JazzScaleApp:
         full_scale_name = self.tree.item(item, "values")[1] 
         scale_notes = self.all_scales_dict.get(full_scale_name, set())
         
-        # MIDI番号のセット(入力) と スケール音名のセット(0-11) を渡す
         self.keyboard.highlight_keys(self.current_input_midi, scale_notes)
         self.update_degree_display(full_scale_name)
 
@@ -490,13 +481,11 @@ class JazzScaleApp:
             root_idx = NOTE_NAMES.index(root_str)
             
             display_parts = []
-            # MIDI番号をソートして処理
             sorted_midi_notes = sorted(list(self.current_input_midi))
             
             for midi_note in sorted_midi_notes:
                 pitch_class = midi_note % 12
                 note_name = NOTE_NAMES[pitch_class]
-                # オクターブ表記を追加 (例: C3, D4)
                 octave = (midi_note // 12) - 1 
                 
                 interval = (pitch_class - root_idx) % 12
