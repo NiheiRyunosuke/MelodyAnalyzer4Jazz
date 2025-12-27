@@ -23,8 +23,10 @@ SCALE_PATTERNS = {
     'Aeolian (Minor)':    [0, 2, 3, 5, 7, 8, 10],
     'Locrian':            [0, 1, 3, 5, 6, 8, 10],
     'Altered':            [0, 1, 3, 4, 6, 8, 10],
-    'Diminished (H-W)':   [0, 1, 3, 4, 6, 7, 9, 10],
-    'Diminished (W-H)':   [0, 2, 3, 5, 6, 8, 9, 11],
+    # --- ディミニッシュ系 ---
+    'Combination of Diminished': [0, 1, 3, 4, 6, 7, 9, 10], # コンディミ (H-W)
+    'Diminished (W-H)':   [0, 2, 3, 5, 6, 8, 9, 11],        # ディミニッシュ (W-H)
+    # ----------------------
     'Wholetone':          [0, 2, 4, 6, 8, 10],
     'Phrygian Dominant':  [0, 1, 4, 5, 7, 8, 10],
     'Lydian Dominant':    [0, 2, 4, 6, 7, 9, 10],
@@ -32,7 +34,7 @@ SCALE_PATTERNS = {
     'Minor Pentatonic':   [0, 3, 5, 7, 10],
     'Blues Scale':        [0, 3, 5, 6, 7, 10],
     'Bebop Dominant':     [0, 2, 4, 5, 7, 9, 10, 11],
-    'Harmonic Minor': [0, 2, 3, 5, 7, 8, 11],
+    'Harmonic Minor':     [0, 2, 3, 5, 7, 8, 11],
 }
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
