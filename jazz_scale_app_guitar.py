@@ -41,9 +41,6 @@ INTERVAL_MAP = {
     6: "#11/b5", 7: "5", 8: "b13", 9: "13", 10: "b7", 11: "7"
 }
 
-# ギターのレギュラーチューニング (Low-E to High-E) のMIDI番号
-GUITAR_OPEN_STRINGS = [40, 45, 50, 55, 59, 64] # E2, A2, D3, G3, B3, E4
-
 def generate_all_scales():
     all_scales = {}
     for root_midi in range(12):
@@ -113,44 +110,43 @@ def analyze_audio(wav_path, progress_callback):
 # 2. GUI用部品 (Guitar Fretboard)
 # ==========================================
 class GuitarFretboard(tk.Canvas):
-    def __init__(self, master, width=1050, height=200, **kwargs):
+    def __init__(self, master, width=1050, height=220, **kwargs):
         super().__init__(master, width=width, height=height, bg="#333333", highlightthickness=0, **kwargs)
         
         self.num_frets = 12
         self.num_strings = 6
         
-        # レイアウト定数
+        # ギターの開放弦 MIDI番号 (E2, A2, D3, G3, B3, E4)
+        self.open_strings = [40, 45, 50, 55, 59, 64]
+        
+        # レイアウト定数 (上部の余白を少し増やしました)
         self.margin_left = 60
         self.margin_right = 30
-        self.margin_top = 30
+        self.margin_top = 40  # 30 -> 40
         self.margin_bottom = 30
         
-        self.fret_width = (width - self.margin_left - self.margin_right) / (self.num_frets + 1) # +1は0フレット分
+        self.fret_width = (width - self.margin_left - self.margin_right) / (self.num_frets + 1)
         self.string_height = (height - self.margin_top - self.margin_bottom) / (self.num_strings - 1)
 
         self.sound_files = {}
         self.temp_dir = tempfile.TemporaryDirectory()
         self.preload_sounds()
         
-        self.drawn_items = [] # マーカーのID保持用
+        self.drawn_items = []
         self.draw_board()
 
     def preload_sounds(self):
         sr = 44100
         duration = 0.5 
-        
-        # ギターの全ポジションの音を生成 (E2 〜 E5あたり)
         start_note = 40 # E2
-        end_note = 40 + 60 # 余裕を持って広めに
+        end_note = 40 + 60 
         
         for midi_note in range(start_note, end_note):
             freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
             t = np.linspace(0, duration, int(sr * duration), False)
             tone = np.sin(freq * t * 2 * np.pi)
             decay = np.exp(-5 * t)
-            # ギターっぽい倍音を少し足す (簡易)
             tone += 0.5 * np.sin(freq * 2 * t * 2 * np.pi) * decay
-            
             audio_data = (tone * decay * 32767 * 0.5).astype(np.int16)
             
             file_path = os.path.join(self.temp_dir.name, f"note_{midi_note}.wav")
@@ -168,78 +164,69 @@ class GuitarFretboard(tk.Canvas):
 
     def play_sequence(self, indices):
         def _run():
-            # スケール試聴はルート音から単音で再生 (ギターのポジション選択は複雑なため簡易的にC3付近で)
             for idx in indices:
-                midi_note = 48 + idx # C3基準で再生
+                midi_note = 48 + idx # C3基準
                 if midi_note in self.sound_files:
                     winsound.PlaySound(self.sound_files[midi_note], winsound.SND_FILENAME | winsound.SND_ASYNC)
                 time.sleep(0.3)
         threading.Thread(target=_run, daemon=True).start()
 
     def draw_board(self):
-        # クリア
         self.delete("all")
         
-        # ナット (0フレットの左)
         nut_x = self.margin_left
         self.create_rectangle(nut_x - 5, self.margin_top, nut_x, self.height() - self.margin_bottom, fill="#DDD")
         
-        # フレット線とインレイ
         inlays = [3, 5, 7, 9, 12]
-        for f in range(self.num_frets + 1): # 0-12
+        for f in range(self.num_frets + 1):
             x = self.margin_left + (f * self.fret_width)
-            
-            # フレット線 (0フレットは描かない)
             if f > 0:
                 self.create_line(x, self.margin_top, x, self.height() - self.margin_bottom, fill="#888", width=2)
-                # フレット番号
                 self.create_text(x - (self.fret_width/2), self.height() - 10, text=str(f), fill="#888")
 
-            # インレイ (丸)
             if f in inlays:
                 cx = self.margin_left + (f * self.fret_width) - (self.fret_width / 2)
                 cy = self.height() / 2
                 r = 6
                 self.create_oval(cx-r, cy-r, cx+r, cy+r, fill="#555", outline="")
-                if f == 12: # 12フレットは2つ
+                if f == 12:
                     self.create_oval(cx-r, cy-r-20, cx+r, cy+r-20, fill="#555", outline="")
                     self.create_oval(cx-r, cy-r+20, cx+r, cy+r+20, fill="#555", outline="")
 
-        # 弦 (上から1弦 -> 6弦)
         for s in range(self.num_strings):
             y = self.margin_top + (s * self.string_height)
-            thickness = 1 + (s * 0.5) # 低音弦ほど太く
+            thickness = 1 + (s * 0.5) 
             self.create_line(self.margin_left, y, self.width() - self.margin_right, y, fill="#C0C0C0", width=thickness)
             
-            # 弦番号ラベル
             self.create_text(20, y, text=f"{s+1}st" if s==0 else f"{s+1}nd" if s==1 else f"{s+1}rd" if s==2 else f"{s+1}th", fill="#FFF", font=("Arial", 8))
             
-            # 開放弦の音名
-            open_note_idx = (GUITAR_OPEN_STRINGS[5-s]) % 12 # 配列はLow-Eからなので逆順参照
+            open_note_idx = (self.open_strings[5-s]) % 12 
             self.create_text(45, y, text=NOTE_NAMES[open_note_idx], fill="#AAA", font=("Arial", 9, "bold"))
 
-    def highlight_notes(self, input_midi_set, scale_pc_set=None):
+    def highlight_notes(self, input_midi_set, scale_pc_set=None, min_fret=0, max_fret=12):
         scale_pc_set = scale_pc_set or set()
         
-        # 前回のマーカーを削除
         for item in self.drawn_items:
             self.delete(item)
         self.drawn_items = []
 
-        # 全ポジションをスキャン (6弦 x 13フレット)
-        for s_idx in range(self.num_strings): # 0(1弦) 〜 5(6弦)
-            # GUITAR_OPEN_STRINGS は [E2, A2, ..., E4] (6弦->1弦)
-            # 描画ループは 1弦(Index 0) -> 6弦(Index 5) なので、逆順で取得
-            open_midi = GUITAR_OPEN_STRINGS[5 - s_idx] 
-            
+        for s_idx in range(self.num_strings): 
+            # 1弦(Index 0) -> 6弦(Index 5) の順で描画
+            # 配列は [E2...E4] (6弦->1弦) なので逆順でアクセス
+            open_midi = self.open_strings[5 - s_idx] 
             y = self.margin_top + (s_idx * self.string_height)
             
             for f in range(self.num_frets + 1):
                 current_midi = open_midi + f
                 current_pc = current_midi % 12
                 
-                # 判定
-                is_input = current_midi in input_midi_set
+                # 表示範囲チェック
+                in_range = (min_fret <= f <= max_fret)
+                
+                # 入力音: MIDI番号一致 AND 範囲内
+                is_input = (current_midi in input_midi_set) and in_range
+                
+                # スケール音: 音名一致 (範囲外でも表示)
                 is_scale = current_pc in scale_pc_set
                 
                 color = None
@@ -251,23 +238,18 @@ class GuitarFretboard(tk.Canvas):
                     color = "#87CEFA" # Blue
                 
                 if color:
-                    # 描画位置
                     if f == 0:
-                        x = self.margin_left - 15 # ナットの外
+                        x = self.margin_left - 15 
                     else:
                         x = self.margin_left + (f * self.fret_width) - (self.fret_width / 2)
                     
                     r = 11
-                    # マーカー
                     marker = self.create_oval(x-r, y-r, x+r, y+r, fill=color, outline="white")
                     
-                    # 音名テキスト
                     note_name = NOTE_NAMES[current_pc]
                     text = self.create_text(x, y, text=note_name, fill="black", font=("Arial", 8, "bold"))
                     
                     self.drawn_items.extend([marker, text])
-                    
-                    # クリックイベント
                     self.tag_bind(marker, "<Button-1>", lambda e, m=current_midi: self.play_note(m))
                     self.tag_bind(text, "<Button-1>", lambda e, m=current_midi: self.play_note(m))
     
@@ -284,7 +266,7 @@ class JazzGuitarApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Jazz Guitar Analyzer (Fretboard Ver.)")
-        self.root.geometry("1100x780")
+        self.root.geometry("1100x820")
         
         style = ttk.Style()
         style.theme_use('clam')
@@ -331,12 +313,32 @@ class JazzGuitarApp:
         self.btn_play_wav = ttk.Button(ctrl_frame, text="▶ 再生", command=self.play_audio, state='disabled', width=8)
         self.btn_play_wav.pack(side=tk.LEFT)
 
-        # --- Fretboard ---
-        kbd_frame = ttk.LabelFrame(root, text="🎸 Fretboard Visualizer (0-12 Fret / Standard Tuning)", padding=10)
-        kbd_frame.pack(fill=tk.X, padx=10, pady=5)
+        # --- Fretboard Controls ---
+        kbd_ctrl_frame = ttk.LabelFrame(root, text="表示設定", padding=5)
+        kbd_ctrl_frame.pack(fill=tk.X, padx=10, pady=(5, 0))
         
-        # ギター指板クラスを使用
-        self.fretboard = GuitarFretboard(kbd_frame, width=1060, height=200)
+        ttk.Label(kbd_ctrl_frame, text="入力メロディ表示範囲: ").pack(side=tk.LEFT)
+        
+        self.min_fret_var = tk.IntVar(value=0)
+        self.max_fret_var = tk.IntVar(value=12)
+        
+        fret_values = list(range(13)) 
+        
+        ttk.Label(kbd_ctrl_frame, text="Start:").pack(side=tk.LEFT)
+        self.cmb_min_fret = ttk.Combobox(kbd_ctrl_frame, textvariable=self.min_fret_var, values=fret_values, width=3, state="readonly")
+        self.cmb_min_fret.pack(side=tk.LEFT, padx=5)
+        self.cmb_min_fret.bind("<<ComboboxSelected>>", self.on_range_changed)
+        
+        ttk.Label(kbd_ctrl_frame, text="End:").pack(side=tk.LEFT)
+        self.cmb_max_fret = ttk.Combobox(kbd_ctrl_frame, textvariable=self.max_fret_var, values=fret_values, width=3, state="readonly")
+        self.cmb_max_fret.pack(side=tk.LEFT, padx=5)
+        self.cmb_max_fret.bind("<<ComboboxSelected>>", self.on_range_changed)
+
+        # --- Fretboard ---
+        kbd_frame = ttk.Frame(root, padding=10)
+        kbd_frame.pack(fill=tk.X, padx=10, pady=0)
+        
+        self.fretboard = GuitarFretboard(kbd_frame, width=1060, height=220)
         self.fretboard.pack()
 
         # --- Degree Info Area ---
@@ -481,8 +483,10 @@ class JazzGuitarApp:
         target_root = self.root_var.get()
 
         self.tree.delete(*self.tree.get_children())
-        # MIDI番号を渡す
-        self.fretboard.highlight_notes(self.current_input_midi, set()) 
+        
+        min_f = self.min_fret_var.get()
+        max_f = self.max_fret_var.get()
+        self.fretboard.highlight_notes(self.current_input_midi, set(), min_fret=min_f, max_fret=max_f) 
 
         display_count = 0
         rank = 0
@@ -508,6 +512,20 @@ class JazzGuitarApp:
         if self.last_analysis_result:
             self.update_result_list()
 
+    def on_range_changed(self, event):
+        if not self.last_analysis_result: return
+        
+        scale_notes = set()
+        selected_items = self.tree.selection()
+        if selected_items:
+            item = selected_items[0]
+            full_scale_name = self.tree.item(item, "values")[1]
+            scale_notes = self.all_scales_dict.get(full_scale_name, set())
+        
+        min_f = self.min_fret_var.get()
+        max_f = self.max_fret_var.get()
+        self.fretboard.highlight_notes(self.current_input_midi, scale_notes, min_fret=min_f, max_fret=max_f)
+
     def on_scale_selected(self, event):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -520,7 +538,10 @@ class JazzGuitarApp:
         full_scale_name = self.tree.item(item, "values")[1] 
         scale_notes = self.all_scales_dict.get(full_scale_name, set())
         
-        self.fretboard.highlight_notes(self.current_input_midi, scale_notes)
+        min_f = self.min_fret_var.get()
+        max_f = self.max_fret_var.get()
+        
+        self.fretboard.highlight_notes(self.current_input_midi, scale_notes, min_fret=min_f, max_fret=max_f)
         self.update_degree_display(full_scale_name)
 
     def update_degree_display(self, full_scale_name):
@@ -564,7 +585,7 @@ class JazzGuitarApp:
 
             sequence = []
             for interval in pattern:
-                sequence.append(interval) # インデックスだけ渡す
+                sequence.append(interval) 
             sequence.append(12)
             
             self.fretboard.play_sequence(sequence)
