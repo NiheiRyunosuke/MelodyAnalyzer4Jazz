@@ -23,10 +23,8 @@ SCALE_PATTERNS = {
     'Aeolian (Minor)':    [0, 2, 3, 5, 7, 8, 10],
     'Locrian':            [0, 1, 3, 5, 6, 8, 10],
     'Altered':            [0, 1, 3, 4, 6, 8, 10],
-    # --- ディミニッシュ系 ---
-    'Combination of Diminished': [0, 1, 3, 4, 6, 7, 9, 10], # コンディミ (H-W)
-    'Diminished (W-H)':   [0, 2, 3, 5, 6, 8, 9, 11],        # ディミニッシュ (W-H)
-    # ----------------------
+    'Combination of Diminished': [0, 1, 3, 4, 6, 7, 9, 10],
+    'Diminished (W-H)':   [0, 2, 3, 5, 6, 8, 9, 11],
     'Wholetone':          [0, 2, 4, 6, 8, 10],
     'Phrygian Dominant':  [0, 1, 4, 5, 7, 8, 10],
     'Lydian Dominant':    [0, 2, 4, 6, 7, 9, 10],
@@ -61,26 +59,40 @@ def analyze_audio(wav_path, progress_callback):
         
         progress_callback("ピッチ(音程)を抽出中...")
         f0, voiced_flag, voiced_probs = librosa.pyin(
-            y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C6')
+            y, fmin=librosa.note_to_hz('A1'), fmax=librosa.note_to_hz('C6')
         )
         
-        confident_f0 = f0[voiced_probs > 0.8]
+        confident_f0 = f0[voiced_probs > 0.5]
         confident_f0 = confident_f0[~np.isnan(confident_f0)]
 
         if len(confident_f0) == 0:
             return None, "有効な音程が検出できませんでした。", None
 
+        # ここで MIDIノート番号（絶対値）を取得
         midi_notes = np.round(librosa.hz_to_midi(confident_f0)).astype(int)
-        pitch_classes = [note % 12 for note in midi_notes]
         
-        note_counts = Counter(pitch_classes)
-        total_notes = sum(note_counts.values())
-        min_count = total_notes * 0.05 
-        melody_pitch_classes = set(
-            [note for note, count in note_counts.items() if count >= min_count]
+        # 1. 絶対音高（MIDI番号）でカウントして、入力音を特定する
+        midi_counts = Counter(midi_notes)
+        total_notes = sum(midi_counts.values())
+        min_count = total_notes * 0.02
+        
+        # 実際に検出されたMIDI番号のセット (例: {48, 52, 60})
+        melody_midi_notes = set(
+            [note for note, count in midi_counts.items() if count >= min_count]
         )
+        
+        # 2. スケール判定用に「音名(0-11)」のセットも作る
+        melody_pitch_classes = set([n % 12 for n in melody_midi_notes])
 
-        detected_notes = sorted([NOTE_NAMES[pc] for pc in melody_pitch_classes])
+        # 保険: 何も残らなかった場合
+        if not melody_pitch_classes and total_notes > 0:
+            top_common = midi_counts.most_common(5) # 上位5つを見る
+            melody_midi_notes = set([n[0] for n in top_common])
+            melody_pitch_classes = set([n % 12 for n in melody_midi_notes])
+
+        detected_notes = sorted([NOTE_NAMES[n % 12] for n in melody_midi_notes])
+        # 重複排除して表示用にする
+        detected_notes = sorted(list(set(detected_notes)), key=lambda x: NOTE_NAMES.index(x) if x in NOTE_NAMES else 0)
         
         progress_callback("スケール理論と照合中...")
         all_scales = generate_all_scales()
@@ -95,7 +107,9 @@ def analyze_audio(wav_path, progress_callback):
             scores[scale_name] = score
 
         sorted_scales = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        return sorted_scales, detected_notes, melody_pitch_classes
+        
+        # 戻り値の3つ目を「MIDI番号のセット」に変更
+        return sorted_scales, detected_notes, melody_midi_notes
 
     except Exception as e:
         return None, str(e), None
@@ -125,7 +139,7 @@ class VirtualKeyboard(tk.Canvas):
     def preload_sounds(self):
         sr = 44100
         duration = 0.5 
-        start_note = 48 
+        start_note = 48 # C3
         
         for i in range(self.total_keys):
             midi_note = start_note + i
@@ -188,25 +202,35 @@ class VirtualKeyboard(tk.Canvas):
                 self.key_ids[i] = rect
                 self.tag_bind(f"key_{i}", "<Button-1>", lambda e, n=i: self.play_note(n))
 
-    def highlight_keys(self, input_notes_set, scale_notes_set=None):
-        scale_notes_set = scale_notes_set or set()
+    def highlight_keys(self, input_midi_set, scale_pc_set=None):
+        """
+        input_midi_set: 検出されたMIDI番号のセット (例: {48, 55}) -> 絶対的な高さ
+        scale_pc_set: スケールの構成音 (0-11) -> 相対的な音名
+        """
+        scale_pc_set = scale_pc_set or set()
+        start_note = 48 # C3
         
         for i in range(self.total_keys):
             item_id = self.key_ids.get(i)
             if not item_id: continue
 
-            pitch_class = i % 12
-            default_color = "black" if pitch_class not in self.white_key_indices else "white"
+            # この鍵盤の絶対MIDI番号と、音名クラス(0-11)を計算
+            current_midi = start_note + i
+            current_pc = current_midi % 12
             
-            is_input = pitch_class in input_notes_set
-            is_scale = pitch_class in scale_notes_set
+            default_color = "black" if current_pc not in self.white_key_indices else "white"
+            
+            # 判定ロジックの変更点:
+            # 入力音は「絶対値」で判定、スケール音は「音名」で判定
+            is_input = current_midi in input_midi_set
+            is_scale = current_pc in scale_pc_set
 
             if is_input and is_scale:
-                self.itemconfig(item_id, fill="#32CD32") # Green
+                self.itemconfig(item_id, fill="#32CD32") # Green (正解かつ弾いた音)
             elif is_input and not is_scale:
-                self.itemconfig(item_id, fill="#FF6347") # Red
+                self.itemconfig(item_id, fill="#FF6347") # Red (外した音)
             elif not is_input and is_scale:
-                self.itemconfig(item_id, fill="#87CEFA") # Blue
+                self.itemconfig(item_id, fill="#87CEFA") # Blue (スケールガイド)
             else:
                 self.itemconfig(item_id, fill=default_color)
 
@@ -217,7 +241,7 @@ class VirtualKeyboard(tk.Canvas):
 class JazzScaleApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Scale Analyzer v2.9 (Built-in Mic)")
+        self.root.title("Jazz Scale Analyzer v2.11 (Octave Sensitive)")
         self.root.geometry("820x780")
         
         style = ttk.Style()
@@ -227,14 +251,13 @@ class JazzScaleApp:
         style.configure("Rec.TButton", foreground="red")
 
         self.all_scales_dict = generate_all_scales()
-        self.current_input_notes = set()
+        
+        # MIDI番号のセットを保持するように変更
+        self.current_input_midi = set()
         self.file_path = None
         
-        # 録音関連の状態変数
         self.is_recording = False
         self.frames = []
-        
-        # ★ マイクデバイスID (リストから判明したID:1を使用)
         self.mic_device_index = 1 
 
         # --- Header ---
@@ -254,7 +277,6 @@ class JazzScaleApp:
         self.cmb_root.pack(side=tk.LEFT, padx=(0, 10))
         self.cmb_root.bind("<<ComboboxSelected>>", self.on_root_changed)
 
-        # 録音ボタン
         self.btn_rec_start = ttk.Button(ctrl_frame, text="🔴 録音開始", command=self.start_recording, style="Rec.TButton")
         self.btn_rec_start.pack(side=tk.LEFT, padx=2)
         
@@ -315,14 +337,13 @@ class JazzScaleApp:
 
         self.tree.bind("<<TreeviewSelect>>", self.on_scale_selected)
 
-        # --- Status ---
         self.status_var = tk.StringVar(value="準備完了")
         self.lbl_status = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5)
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.last_analysis_result = None
 
-    # --- Recording Functions ---
+    # --- Recording ---
     def start_recording(self):
         self.is_recording = True
         self.frames = []
@@ -330,7 +351,6 @@ class JazzScaleApp:
         self.btn_rec_stop.config(state='normal')
         self.btn_select.config(state='disabled') 
         self.status_var.set("🔴 録音中... (マイクに向かって演奏してください)")
-        
         threading.Thread(target=self._record_thread).start()
 
     def stop_recording(self):
@@ -345,14 +365,7 @@ class JazzScaleApp:
         
         try:
             p = pyaudio.PyAudio()
-            
-            # ★ ここでデバイスIDを指定 (ID: 1)
-            stream = p.open(format=FORMAT, 
-                            channels=CHANNELS, 
-                            rate=RATE, 
-                            input=True, 
-                            frames_per_buffer=CHUNK,
-                            input_device_index=self.mic_device_index) # <--- 強制指定
+            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK, input_device_index=self.mic_device_index)
             
             while self.is_recording:
                 data = stream.read(CHUNK)
@@ -373,13 +386,11 @@ class JazzScaleApp:
             wf.close()
             
             self.file_path = save_path
-            
             self.btn_rec_start.config(state='normal')
             self.btn_rec_stop.config(state='disabled')
             self.btn_select.config(state='normal')
             self.btn_play_wav.config(state='normal')
             self.status_var.set(f"録音完了: {filename} を分析中...")
-            
             self.run_analysis()
             
         except Exception as e:
@@ -388,7 +399,7 @@ class JazzScaleApp:
             self.btn_rec_start.config(state='normal')
             self.btn_rec_stop.config(state='disabled')
 
-    # --- Existing Functions ---
+    # --- Analysis & UI ---
     def select_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
         if file_path:
@@ -414,13 +425,14 @@ class JazzScaleApp:
     def _process_analysis(self):
         result = analyze_audio(self.file_path, lambda msg: self.status_var.set(msg))
         
-        scales, note_names, note_indices = result
+        # result: (scales, detected_note_names, melody_midi_notes)
+        scales, note_names, midi_notes = result
         if scales is None:
             self.status_var.set(f"エラー: {note_names}")
             return
 
         self.last_analysis_result = result
-        self.current_input_notes = note_indices
+        self.current_input_midi = midi_notes # ここがMIDI番号のセットになる
         self.update_result_list()
 
     def update_result_list(self):
@@ -429,7 +441,8 @@ class JazzScaleApp:
         target_root = self.root_var.get()
 
         self.tree.delete(*self.tree.get_children())
-        self.keyboard.highlight_keys(self.current_input_notes, self.current_input_notes)
+        # MIDI番号を渡す
+        self.keyboard.highlight_keys(self.current_input_midi, set()) 
 
         display_count = 0
         rank = 0
@@ -467,7 +480,8 @@ class JazzScaleApp:
         full_scale_name = self.tree.item(item, "values")[1] 
         scale_notes = self.all_scales_dict.get(full_scale_name, set())
         
-        self.keyboard.highlight_keys(self.current_input_notes, scale_notes)
+        # MIDI番号のセット(入力) と スケール音名のセット(0-11) を渡す
+        self.keyboard.highlight_keys(self.current_input_midi, scale_notes)
         self.update_degree_display(full_scale_name)
 
     def update_degree_display(self, full_scale_name):
@@ -476,15 +490,20 @@ class JazzScaleApp:
             root_idx = NOTE_NAMES.index(root_str)
             
             display_parts = []
-            sorted_input_indices = sorted(list(self.current_input_notes))
+            # MIDI番号をソートして処理
+            sorted_midi_notes = sorted(list(self.current_input_midi))
             
-            for note_idx in sorted_input_indices:
-                note_name = NOTE_NAMES[note_idx]
-                interval = (note_idx - root_idx) % 12
+            for midi_note in sorted_midi_notes:
+                pitch_class = midi_note % 12
+                note_name = NOTE_NAMES[pitch_class]
+                # オクターブ表記を追加 (例: C3, D4)
+                octave = (midi_note // 12) - 1 
+                
+                interval = (pitch_class - root_idx) % 12
                 degree_name = INTERVAL_MAP.get(interval, "?")
-                display_parts.append(f"{note_name}({degree_name})")
+                display_parts.append(f"{note_name}{octave}({degree_name})")
             
-            result_text = f"【 {full_scale_name} 】のルートから見た入力音:   " + "  -  ".join(display_parts)
+            result_text = f"【 {full_scale_name} 】上の度数:   " + "  -  ".join(display_parts)
             self.lbl_degree_info.config(text=result_text, foreground="#0055AA", font=("Meiryo UI", 12, "bold"))
             
         except Exception as e:
