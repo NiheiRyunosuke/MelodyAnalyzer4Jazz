@@ -25,13 +25,15 @@ pip install librosa numpy pyaudio
 ```
 
 ### 2. アプリの起動
-🎹 ピアノ版（汎用）
+
+
+#### 🎹 ピアノ版（汎用）
 
 ```bash
 python jazz_scale_app.py
 ```
 
-🎸 ギター版
+#### 🎸 ギター版
 
 ```bash
 python jazz_scale_app_guitar.py
