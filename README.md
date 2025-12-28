@@ -26,13 +26,16 @@ pip install librosa numpy pyaudio
 
 ### 2. アプリの起動
 🎹 ピアノ版（汎用）
-Bash
 
+```bash
 python jazz_scale_app.py
-🎸 ギター版
-Bash
+```
 
+🎸 ギター版
+
+```bash
 python jazz_scale_app_guitar.py
+```
 
 ### 🛠 使い方
 ルート音指定 (任意): 特定のコード上で分析したい場合は、右上のドロップダウンからルート音（Key）を選択します。
