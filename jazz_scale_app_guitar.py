@@ -12,7 +12,7 @@ import time
 import pyaudio
 
 # ==========================================
-# 1. 分析ロジック (変更なし)
+# 1. 分析ロジック (Backend)
 # ==========================================
 SCALE_PATTERNS = {
     'Ionian (Major)':     [0, 2, 4, 5, 7, 9, 11],
@@ -165,19 +165,15 @@ class GuitarFretboard(tk.Canvas):
 class JazzGuitarApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jazz Guitar Analyzer (v2.19 - Improved UI)")
+        self.root.title("Jazz Guitar Analyzer (v2.20 - Output Folder Support)")
         self.root.geometry("1120x860")
         
-        # スタイルの設定
         style = ttk.Style()
         style.theme_use('clam')
         style.configure("TFrame", background="#f5f5f5")
         style.configure("Treeview", font=("Meiryo UI", 10), rowheight=28)
         style.configure("Header.TLabel", font=("Meiryo UI", 16, "bold"))
-        
-        # 強調ボタン（録音開始）
         style.configure("Record.TButton", font=("Meiryo UI", 10, "bold"), foreground="red")
-        # 通常アクションボタン
         style.configure("Action.TButton", font=("Meiryo UI", 10))
 
         self.all_scales_dict = generate_all_scales()
@@ -217,10 +213,8 @@ class JazzGuitarApp:
         # --- Fretboard Setting Area ---
         fret_ctrl = ttk.Frame(root, padding=(10, 10, 10, 0))
         fret_ctrl.pack(fill=tk.X)
-        
         inner_fret_ctrl = ttk.LabelFrame(fret_ctrl, text=" 🎸 指板の表示設定 ", padding=10)
         inner_fret_ctrl.pack(fill=tk.X)
-        
         ttk.Label(inner_fret_ctrl, text="入力メロディを表示する範囲を指定:   Start").pack(side=tk.LEFT)
         self.min_fret_var = tk.IntVar(value=0); self.max_fret_var = tk.IntVar(value=12)
         c1 = ttk.Combobox(inner_fret_ctrl, textvariable=self.min_fret_var, values=list(range(13)), width=4, state="readonly")
@@ -245,23 +239,18 @@ class JazzGuitarApp:
         # --- Result Table ---
         res_frame = ttk.LabelFrame(root, text=" 📊 分析結果（適合率の高い順） ", padding=10)
         res_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
         btn_area = ttk.Frame(res_frame)
         btn_area.pack(fill=tk.X, pady=(0, 5))
         self.btn_preview_scale = ttk.Button(btn_area, text="🔊 選択したスケールを試聴する", command=self.play_selected_scale, state='disabled')
         self.btn_preview_scale.pack(side=tk.RIGHT)
-        
         self.tree = ttk.Treeview(res_frame, columns=("Rank", "Scale", "Match"), show="headings", selectmode="browse")
         self.tree.heading("Rank", text="順位"); self.tree.heading("Scale", text="推奨スケール名"); self.tree.heading("Match", text="適合率")
         self.tree.column("Rank", width=60, anchor="center"); self.tree.column("Scale", width=450, anchor="w"); self.tree.column("Match", width=120, anchor="center")
-        
         sb = ttk.Scrollbar(res_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=sb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True); sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<<TreeviewSelect>>", self.on_scale_selected)
 
-        # --- Status Bar ---
         self.status_var = tk.StringVar(value="準備完了：WAVファイルを開くか、録音ボタンを押してください。")
         ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=5).pack(side=tk.BOTTOM, fill=tk.X)
         self.last_analysis_result = None
@@ -277,13 +266,23 @@ class JazzGuitarApp:
 
     def _record_thread(self):
         try:
+            # ★ outputフォルダの作成
+            output_dir = "output"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
             p = pyaudio.PyAudio()
             stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024, input_device_index=self.mic_device_index)
             while self.is_recording: self.frames.append(stream.read(1024))
             stream.stop_stream(); stream.close(); p.terminate()
-            path = os.path.abspath(f"rec_{int(time.time())}.wav")
+            
+            # ★ パスをoutputフォルダ内に設定
+            filename = f"rec_{int(time.time())}.wav"
+            path = os.path.abspath(os.path.join(output_dir, filename))
+            
             with wave.open(path, 'wb') as wf:
                 wf.setnchannels(1); wf.setsampwidth(p.get_sample_size(pyaudio.paInt16)); wf.setframerate(44100); wf.writeframes(b''.join(self.frames))
+            
             self.file_path = path; self.btn_rec_start.config(state='normal'); self.btn_rec_stop.config(state='disabled')
             self.btn_play_wav.config(state='normal'); self.run_analysis()
         except Exception as e: self.status_var.set(f"録音エラー: {e}")
